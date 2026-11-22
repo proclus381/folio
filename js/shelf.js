@@ -50,6 +50,11 @@ export class Shelf {
     this.lastStep = 0;
     this.openGap = 0; // 0..1 how far the neighbours are pushed apart for an open book
     this.openGapWidth = 0; // world units each side
+    // reading alone: the open book's neighbours walk off the screen (wanted 0/1, eased; it rides on openGap,
+    // so they leave as the book comes out and come back as it goes home)
+    this.alone = false;
+    this.aloneK = 0;
+    this.aloneV = { v: 0 };
     this.hiddenEntry = null;
     this.onSelect = null;
     this.onRowChange = null;
@@ -661,6 +666,12 @@ export class Shelf {
       if (Math.abs(this.rowPos - this.r) < 0.0008 && Math.abs(this.rowV.v) < 0.002) this.rowPos = this.r;
       if (Math.abs(this.rowPos - before) > 1e-6) moving = true;
     } else moving = true;
+    const aloneTo = this.alone ? 1 : 0;
+    if (this.aloneK !== aloneTo) {
+      this.aloneK = dt > 0 ? smoothDamp(this.aloneK, aloneTo, this.aloneV, 0.3, dt) : aloneTo;
+      if (Math.abs(this.aloneK - aloneTo) < 0.001 && Math.abs(this.aloneV.v) < 0.005) this.aloneK = aloneTo;
+      moving = true;
+    }
     // carrying a book to an edge scrolls the row under it
     if (this.lift && this.lift.edge && dt > 0) {
       this.pTarget = clamp(this.pTarget + this.lift.edge * dt * 7, 0, Math.max(0, this.entries.length - 1));
@@ -752,7 +763,11 @@ export class Shelf {
     const i1 = Math.min(n - 1, i0 + 1);
     const fr = pc - i0;
     const cx = centers[i0] + (centers[i1] - centers[i0]) * fr;
-    const gap = current ? this.openGapWidth * this.openGap : 0;
+    // reading alone, the neighbours go on past the screen's edges (half the view at the shelf, and a book more)
+    const offK = current ? this.aloneK * this.openGap : 0;
+    const offW = offK > 0 ? Math.tan(((app.camera.fov * Math.PI) / 180) / 2) * (app.cameraBase.z - SHELF_Z) * (app.width / app.height) + Math.abs(app.cameraBase.x) + 4 : 0;
+    const gap = current ? this.openGapWidth * this.openGap + offW * offK : 0;
+    const gone = offK > 0.995; // all off screen: stop drawing them
     const sel = row.selected;
     for (let i = 0; i < n; i++) {
       const e = row.entries[i];
@@ -777,7 +792,7 @@ export class Shelf {
       }
       e.slot.position.set(px, y, pz);
       e.slot.rotation.y = e.yaw;
-      e.slot.visible = visible && e !== this.hiddenEntry;
+      e.slot.visible = visible && e !== this.hiddenEntry && !gone;
     }
     // bookends hug the row's ends; section labels sit on the plank's edge under their sections
     const d = row.deco;
@@ -787,7 +802,7 @@ export class Shelf {
       const zMid = SHELF_Z - 6.4;
       d.ends[0].position.set(first.x - first.footprint / 2 - 0.05, rowY + BASE_Y, zMid);
       d.ends[1].position.set(last.x + last.footprint / 2 + 0.05, rowY + BASE_Y, zMid);
-      for (const b of d.ends) b.visible = visible;
+      for (const b of d.ends) b.visible = visible && !gone;
     }
     const reading = !!(this.app.reader && this.app.reader.isOpen);
     if (d && d.labels.length) {

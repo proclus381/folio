@@ -132,6 +132,8 @@ class App {
     this.ui.setSortLabel(this.arrangeLabel());
     this.shelf.onRowChange = (row) => this.onRowChange(row);
     this.shelf.setPlank(this.plank, this.theme === 'dark');
+    this.shelf.alone = pref('readAlone', '1') === '1';
+    this.ui.setReadAlone(this.shelf.alone);
     this.resize();
     this.bindInput();
     await this.loadLibrary();
@@ -820,6 +822,14 @@ class App {
     this.invalidate();
   }
 
+  /** Read with the shelf beside the open book, or with the book alone (its neighbours step off the screen). */
+  toggleReadAlone() {
+    this.shelf.alone = !this.shelf.alone;
+    setPref('readAlone', this.shelf.alone ? '1' : '0');
+    this.ui.setReadAlone(this.shelf.alone);
+    this.invalidate();
+  }
+
   // ================================================================= input
   bindInput() {
     const c = this.canvas;
@@ -1113,6 +1123,11 @@ class App {
     if (this.reader.isOpen) {
       if (e.key === 'm') {
         this.toggleMagnifier();
+        e.preventDefault();
+        return;
+      }
+      if (e.key === 's' && !e.metaKey && !e.ctrlKey) {
+        this.toggleReadAlone();
         e.preventDefault();
         return;
       }

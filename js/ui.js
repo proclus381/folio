@@ -78,6 +78,7 @@ export class UI {
     $('flag-tip').addEventListener('click', () => this.flagTipGo && this.flagTipGo());
     $('rb-undo').addEventListener('click', () => r().undo());
     $('rb-mag').addEventListener('click', () => app.toggleMagnifier());
+    $('rb-shelf').addEventListener('click', () => app.toggleReadAlone());
     this.initLightPop();
     for (const id of ['rb-pink', 'rb-yellow', 'rb-pen', 'rb-eraser']) {
       const b = $(id);
@@ -300,6 +301,14 @@ export class UI {
   setMagnifier(on) {
     $('rb-mag').setAttribute('aria-pressed', String(on));
     $('rb-mag').setAttribute('aria-label', on ? 'Turn off magnifier' : 'Turn on magnifier');
+  }
+
+  /** The reader bar's shelf switch: pressed while the other books stand beside the open one. */
+  setReadAlone(alone) {
+    const b = $('rb-shelf');
+    b.setAttribute('aria-pressed', String(!alone));
+    b.setAttribute('aria-label', alone ? 'Show the shelf beside the book' : 'Hide the shelf, read the book alone');
+    b.title = (alone ? 'Show the shelf' : 'Hide the shelf') + ' (S)';
   }
 
   // ------------------------------------------------------------------ reading light
