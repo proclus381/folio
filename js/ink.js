@@ -254,6 +254,20 @@ export class InkLayer {
   }
 
   /**
+   * Let go of the layers of pages not in `keep` (a page with marks holds two page-sized canvases and a texture,
+   * ≈ 13 MB: over a long sitting they added up). The marks stay; a page shown again gets its layer back.
+   */
+  evict(keep) {
+    for (const [page, l] of this.layers) {
+      if (keep.has(page) || (this.live && this.live.page === page)) continue;
+      l.tex.dispose();
+      l.canvas.width = l.canvas.height = 1;
+      l.base.width = l.base.height = 1;
+      this.layers.delete(page);
+    }
+  }
+
+  /**
    * Draw what changed, once a frame (the reader calls this before rendering). While a stroke is being written
    * only the few pixels around its newest part are redrawn, and `upload(tex, canvas, rect)` puts just those on the
    * GPU (returns false to fall back to a whole upload). Before, every Pencil sample (up to 240 a second) redrew

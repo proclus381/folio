@@ -1,6 +1,6 @@
 // Import PDFs into the library and export them back out with annotations flattened in.
 
-import { openPdf, readMeta, readOutline, renderPageToCanvas, analyseCover, canvasToBlob } from './pdfdoc.js';
+import { openPdf, readMeta, readOutline, renderPageToCanvas, analyseCover, canvasToBlob, samplePaperTone } from './pdfdoc.js';
 import { chooseLook } from './textures.js';
 import { bookDims } from './book3d.js';
 import { strokePolygons, strokeLook } from './ink.js';
@@ -50,6 +50,8 @@ export async function importFiles(files, existing, onProgress, { shelf = null, s
       const analysis = analyseCover(cover);
       const coverBlob = await canvasToBlob(cover, 'image/jpeg', 0.86);
       cover.width = cover.height = 1;
+      // the pages' own paper (a scan's yellowed leaves), so the page block is their colour from the start
+      const pageTone = await samplePaperTone(doc).catch(() => null);
       const id = newId();
       const meta = {
         id,
@@ -68,6 +70,7 @@ export async function importFiles(files, existing, onProgress, { shelf = null, s
         outline: outline.slice(0, 400),
         fingerprint: fp,
         look: chooseLook(id, m.title, analysis),
+        ...(pageTone ? { pageTone } : {}),
         shelf,
         shelfName,
         section: (shelf && sectionFor && sectionFor(file)) || null,

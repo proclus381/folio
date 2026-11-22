@@ -15,6 +15,7 @@ import { UI } from './ui.js';
 import { Magnifier } from './magnifier.js';
 import * as store from './store.js';
 import { importFiles, exportAnnotated, folderShelves, filesFromDrop } from './library.js';
+import { openPdf, samplePaperTone } from './pdfdoc.js';
 import { GROUPS, ORDERS, layout as arrangeLayout, sortBooks, loadShelves, saveShelves, reconcileShelves, newShelfId, seedManualOrder, orderBetween } from './arrange.js';
 import {
   makeGrainTexture,
@@ -298,6 +299,52 @@ class App {
     this.ui.setCount(this.metas.length);
     if (!this.metas.length) this.ui.setNow(null);
     this.invalidate();
+    this.backfillPaperTone();
+  }
+
+  /**
+   * Books added before their pages' paper was measured on import (library.js) showed a white page block, even
+   * a scan of yellowed leaves, until first opened: measure them in the background, one at a time, never while
+   * a book is being read (its own pages come first) and not the very large files (they get it when opened).
+   */
+  async backfillPaperTone() {
+    if (this.toneBusy) return;
+    this.toneBusy = true;
+    const tried = (this.toneTried = this.toneTried || new Set());
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    try {
+      for (;;) {
+        await wait(1200);
+        while (this.reader.active) await wait(2500);
+        const m = this.metas.find((x) => !x.pageTone && !tried.has(x.id));
+        if (!m) break;
+        tried.add(m.id);
+        const blob = await store.getFile(m.id).catch(() => null);
+        if (!blob || blob.size > 150e6) continue;
+        let doc = null;
+        try {
+          doc = await openPdf(await blob.arrayBuffer());
+          const tone = await samplePaperTone(doc);
+          // the library may have been reloaded meanwhile: write to the book as it is now
+          const cur = this.metas.find((x) => x.id === m.id);
+          if (!tone || !cur || cur.pageTone) continue;
+          cur.pageTone = tone;
+          await store.putBook(cur);
+          const e = this.shelf.all.get(cur.id);
+          if (e) {
+            e.meta.pageTone = tone;
+            if (e !== this.shelf.hiddenEntry) this.shelf.syncPaper(e);
+          }
+          this.invalidate();
+        } catch (err) {
+          console.warn('paper tone', m.title, err);
+        } finally {
+          if (doc) doc.destroy();
+        }
+      }
+    } finally {
+      this.toneBusy = false;
+    }
   }
 
   // ---------------------------------------------------------------- flags

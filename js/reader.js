@@ -7,7 +7,7 @@ import { Leaf, makePageMaterial, surfaceTable, NX, NY } from './leaf.js';
 import { FLAG, flagsOf, makeFlagMesh, flagMatrix, flagScreenBox, pickBox, layerAt } from './markers.js';
 import { applyPaper } from './paper.js';
 import { InkLayer, warmGraphite } from './ink.js';
-import { openPdf, renderPageToCanvas, renderQueue, readOutline } from './pdfdoc.js';
+import { openPdf, renderPageToCanvas, renderQueue, readOutline, marginTone, toneOf } from './pdfdoc.js';
 import { canvasTexture, makePaperCanvas } from './textures.js';
 import { SHELF_Z } from './shelf.js';
 import * as store from './store.js';
@@ -802,34 +802,13 @@ export class Reader {
   sampleScanTone(canvas, n) {
     if (this.meta.pageTone || n < 3 || !this.scanSamples || this.scanSamples.length >= 3) return;
     try {
-      const w = 40;
-      const h = Math.max(8, Math.round((w * canvas.height) / canvas.width));
-      const c = document.createElement('canvas');
-      c.width = w;
-      c.height = h;
-      const x = c.getContext('2d', { willReadFrequently: true });
-      x.drawImage(canvas, 0, 0, w, h);
-      const px = x.getImageData(0, 0, w, h).data;
-      const ring = [];
-      for (let y = 0; y < h; y++)
-        for (let i = 0; i < w; i++) {
-          const fx = i / w;
-          const fy = y / h;
-          const inMargin = (fx > 0.05 && fx < 0.11) || (fx > 0.89 && fx < 0.95) || (fy > 0.04 && fy < 0.08) || (fy > 0.92 && fy < 0.96);
-          if (!inMargin) continue;
-          const o = (y * w + i) * 4;
-          ring.push([px[o], px[o + 1], px[o + 2]]);
-        }
-      ring.sort((a, b) => b[0] + b[1] + b[2] - (a[0] + a[1] + a[2]));
-      const top = ring.slice(0, Math.max(1, Math.floor(ring.length * 0.5)));
-      const avg = [0, 1, 2].map((ch) => top.reduce((sum, p) => sum + p[ch], 0) / top.length);
-      this.scanSamples.push(avg);
+      const t = marginTone(canvas);
+      if (t) this.scanSamples.push(t);
     } catch {
       return;
     }
     if (this.scanSamples.length < 3) return;
-    const m = [0, 1, 2].map((ch) => this.scanSamples.map((p) => p[ch]).sort((a, b) => a - b)[1]);
-    this.meta.pageTone = '#' + m.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+    this.meta.pageTone = toneOf(this.scanSamples);
     store.putBook(this.meta).catch(() => {});
     this.applyPaper();
   }
@@ -926,6 +905,12 @@ export class Reader {
   }
 
   evictPages() {
+    // ink layers (two page-sized canvases each) only for the pages on the leaves in use
+    if (this.ink) {
+      const keep = new Set();
+      for (const k of this.leafOf.keys()) keep.add(2 * k + 1).add(2 * k + 2);
+      this.ink.evict(keep);
+    }
     if (this.pages.size <= 18) return;
     const lo = 2 * this.s - 6;
     const hi = 2 * this.s + 7;
@@ -1180,6 +1165,7 @@ export class Reader {
       }
     }
     this.prefetchSpread(this.s, 1);
+    this.evictPages();
     this.updateBar();
     clearTimeout(this._saveT);
     this._saveT = setTimeout(() => this.saveSpread(), 600);

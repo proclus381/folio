@@ -78,6 +78,7 @@ function paperUniforms(paper) {
       deckleK: { value: 0 }, // a deckled (rough-cut) fore-edge
       pagePaper: { value: new THREE.Color(1, 1, 1) }, // a scan's own paper colour: what shows through is its ink, not that
       glossMottle: { value: 0 }, // coated paper: glossier on the coating's peaks, duller in its hollows
+      wearK: { value: 0 }, // the book's wear: outer corners rounded off, edges a little greyed by hands
       // a soft second light skimming the page from the upper left (in book space), so the paper's relief
       // reads even under the flat key light; only its variation is added, the page does not get brighter
       rakeDir: { value: new THREE.Vector3(-0.55, 0.75, 0.36).normalize() },
@@ -161,6 +162,7 @@ uniform float deckleK;
 uniform vec3 pagePaper;
 uniform float glossMottle;
 uniform float soil;
+uniform float wearK;
 uniform vec3 rakeColor;
 varying vec2 vPageUv;
 varying vec3 vRake;
@@ -187,6 +189,12 @@ vec2 pcm = vPageUv * pageSize; // this spot on the sheet, in cm from the gutter'
 if (deckleK > 0.0) {
   float rag = texture2D(paperMarks, vec2(0.5, pcm.y * 0.3 + paperSeed.x)).b;
   if (pageSize.x - pcm.x < deckleK * (0.04 + 0.22 * rag)) discard;
+}
+// worn: paper wears away where it is handled, and the outer corners round off (up to ≈ 3.5 mm)
+float wornR = wearK * 0.35;
+if (wornR > 0.001) {
+  vec2 cq = vec2(pageSize.x - pcm.x, min(pcm.y, pageSize.y - pcm.y));
+  if (cq.x < wornR && cq.y < wornR && length(vec2(wornR) - cq) > wornR) discard;
 }
 // the two sides are never printed in perfect register: the far side sits ≈1–2 mm off, a hair skewed, so its
 // lines fall between this side's lines instead of hiding behind them
@@ -239,8 +247,15 @@ col *= mix(vec3(1.0), vec3(0.74, 0.55, 0.38), min(1.0, fox));
 // finger soil where pages are turned: the lower outer corner most, the upper a little
 float cLo = length(vec2((pageSize.x - pcm.x) * 0.8, pcm.y));
 float cHi = length(vec2((pageSize.x - pcm.x) * 0.9, pageSize.y - pcm.y));
-float thumb = (1.0 - smoothstep(0.0, 5.5, cLo)) + 0.4 * (1.0 - smoothstep(0.0, 3.5, cHi));
-col *= mix(vec3(1.0), vec3(0.86, 0.83, 0.78), clamp(soil * thumb * (0.45 + 1.1 * mk.g), 0.0, 1.0) * 0.55);
+// (stronger than before, when it hardly showed: a well-thumbed corner is plainly grey-brown) and along the
+// fore-edge margin, low down, where fingers slide to turn
+float foreM = 1.0 - smoothstep(0.0, 1.6, pageSize.x - pcm.x);
+float lowMid = exp(-pow((pcm.y / pageSize.y - 0.3) / 0.25, 2.0));
+float thumb = (1.0 - smoothstep(0.0, 6.0, cLo)) + 0.45 * (1.0 - smoothstep(0.0, 4.0, cHi)) + 0.35 * foreM * lowMid;
+float soilK = clamp(soil * thumb * (0.35 + 1.3 * mk.g), 0.0, 1.0);
+col *= mix(vec3(1.0), vec3(0.78, 0.74, 0.68), soilK * 0.75);
+// handled edges go a little grey and soft
+col *= 1.0 - 0.07 * wearK * (1.0 - smoothstep(0.0, 0.3, edgeCm));
 // laid paper: laid lines ≈ 1 mm apart across the sheet, chain lines ≈ 2.5 cm apart along it. The pulp is
 // thinner over the wires, so both show lighter in light through the sheet (and a breath darker on it). Lines
 // finer than the screen can draw fade out rather than shimmer.
@@ -330,7 +345,7 @@ roughnessFactor *= 1.0 - glossMottle * (texture2D(normalMap, folioTuv).b - 0.5) 
 #include <opaque_fragment>`,
       );
   };
-  mat.customProgramCacheKey = () => 'folio-paper-10';
+  mat.customProgramCacheKey = () => 'folio-paper-13';
   return mat;
 }
 

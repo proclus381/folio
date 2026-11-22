@@ -121,7 +121,7 @@ export function resolvePaper(p, { scanTone = null, lived = 0 } = {}) {
   const thin = (1 - opacity) / 0.05; // 1 for book wove
   const stiff = T.E * Math.pow(caliper / BASE.caliper, 3);
   const wear = Math.max(s.wear, lived);
-  const flex = clamp(Math.pow(stiff, -0.18), 0.5, 2.0) * (1 + 0.12 * wear); // supple leaves curl more, softened by use
+  const flex = clamp(Math.pow(stiff, -0.18), 0.5, 2.0) * (1 + 0.35 * wear); // supple leaves curl more; use softens them
 
   // colour: the type's tint, moved toward white or ivory by the shade setting
   const tint = new THREE.Color(T.tint);
@@ -134,6 +134,9 @@ export function resolvePaper(p, { scanTone = null, lived = 0 } = {}) {
   // age: groundwood tones early, rag late; every paper is fully browned at the slider's end
   const tone = Math.pow(s.age, 1 + 1.5 * (1 - T.lignin)) * (scan ? 1 - scan.k : 1);
   const toned = tint.clone().multiply(new THREE.Color(1, 1, 1).lerp(AGED, tone * 0.75));
+  // the colour a page shows: the paper, times a scan's own paper (a born-digital page is white)
+  const face = toned.clone();
+  if (scan) face.multiply(new THREE.Color(scanTone));
 
   return {
     settings: s,
@@ -151,18 +154,20 @@ export function resolvePaper(p, { scanTone = null, lived = 0 } = {}) {
     toothK: anchored(s.surface, T.surface, 0.008, T.tooth, 1.2, true),
     grainK: T.grain * anchored(s.surface, T.surface, 0.3, 1, 3, true), // flecks come with the tooth
     mottleK: T.mottle,
-    cockleK: T.cockle * (1 + 1.2 * wear + 0.4 * s.age),
+    cockleK: T.cockle * (1 + 2.0 * wear + 0.4 * s.age), // handled pages go wavy
     roughness: anchored(s.sheen, T.sheen, 0.98, T.roughness, 0.15), // sheen: bone-dry matte … gloss
     ageTone: tone, // the band of toning along the head, tail and fore-edge
     foxK: Math.pow(s.age, 1.4 + (1 - T.lignin)), // spots: humidity and impurities, sooner in cheap pulp
     soil: wear,
+    wear,
     laidK: T.laid || 0,
     deckle: T.deckle || 0,
-    // the page block (stacks, and its edges on the shelf)
-    block: new THREE.Color(BASE.block).multiply(ratio(toned, BASE.tint)),
-    // the block's edges: the sheet's colour, browned further with age (they get the most light and air) and
+    // the page block (stacks, and its edges on the shelf): its own grey-beige, carried along with the colour the
+    // pages show, a scan's yellowed paper included (it stood on a white block before)
+    block: new THREE.Color(BASE.block).multiply(ratio(face, BASE.tint)),
+    // the block's edges: the pages' colour, browned further with age (they get the most light and air) and
     // greyed a little by hands
-    edgeColor: ratio(toned, BASE.tint)
+    edgeColor: ratio(face, BASE.tint)
       .multiply(new THREE.Color(1, 1, 1).lerp(new THREE.Color(0.86, 0.71, 0.5), Math.min(1, tone * 1.1)))
       .multiplyScalar(1 - 0.14 * wear),
     edge: T.edge || 'plain',
@@ -181,7 +186,7 @@ function scanYellow(hex) {
   return { k: clamp(warm / 0.12, 0, 1) };
 }
 
-/** a / b per channel, as a colour (used to carry the tint's change over to the page block). */
+/** a / b per channel, as a colour (used to carry the pages' colour over to the page block). */
 function ratio(a, bHex) {
   const b = new THREE.Color(bHex);
   return new THREE.Color(a.r / b.r, a.g / b.g, a.b / b.b);
@@ -198,6 +203,7 @@ export function applyPaper(u, pool, r, pageW, pageH) {
   u.cockleK.value = r.cockleK;
   u.ageTone.value = r.ageTone;
   u.foxK.value = r.foxK;
+  u.wearK.value = r.wear;
   u.laidK.value = r.laidK;
   u.deckleK.value = r.deckle;
   u.pageSize.value.set(pageW, pageH);

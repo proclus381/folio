@@ -174,6 +174,66 @@ export async function renderPageToCanvas(doc, pageNum, boxW, boxH, { background 
 }
 
 // ---------------------------------------------------------------------------------------------
+// The colour of the paper a PDF shows (a scan's yellowed pages; white for a born-digital book)
+
+/**
+ * A page's own paper, from its margins: a ring inside the edge (clear of a dark scanner border), its lighter
+ * half (clear of the ink). [r, g, b] 0…255, or null.
+ */
+export function marginTone(canvas) {
+  const w = 40;
+  const h = Math.max(8, Math.round((w * canvas.height) / canvas.width));
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.drawImage(canvas, 0, 0, w, h);
+  const px = x.getImageData(0, 0, w, h).data;
+  const ring = [];
+  for (let y = 0; y < h; y++)
+    for (let i = 0; i < w; i++) {
+      const fx = i / w;
+      const fy = y / h;
+      const inMargin = (fx > 0.05 && fx < 0.11) || (fx > 0.89 && fx < 0.95) || (fy > 0.04 && fy < 0.08) || (fy > 0.92 && fy < 0.96);
+      if (!inMargin) continue;
+      const o = (y * w + i) * 4;
+      ring.push([px[o], px[o + 1], px[o + 2]]);
+    }
+  if (!ring.length) return null;
+  ring.sort((a, b) => b[0] + b[1] + b[2] - (a[0] + a[1] + a[2]));
+  const top = ring.slice(0, Math.max(1, Math.floor(ring.length * 0.5)));
+  return [0, 1, 2].map((ch) => top.reduce((sum, p) => sum + p[ch], 0) / top.length);
+}
+
+/** The paper of several pages' samples: their median, channel by channel, as '#rrggbb'. */
+export function toneOf(samples) {
+  if (!samples.length) return null;
+  const mid = Math.floor(samples.length / 2);
+  const m = [0, 1, 2].map((ch) => samples.map((p) => p[ch]).sort((a, b) => a - b)[mid]);
+  return '#' + m.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * The paper a PDF's pages show ('#rrggbb'), measured on import so the page block is the pages' colour on the
+ * shelf before the book is first opened: a few small renders from page 3 on (past a cover and its verso),
+ * each at its own shape (no letterbox to count as margin).
+ */
+export async function samplePaperTone(doc, count = 3) {
+  const n = doc.numPages;
+  const samples = [];
+  for (let p = Math.min(3, n); p <= n && samples.length < count; p++) {
+    const page = await doc.getPage(p);
+    const vp = page.getViewport({ scale: 1 });
+    const w = 64;
+    const c = await renderPageToCanvas(doc, p, w, Math.max(8, Math.round((w * vp.height) / vp.width)));
+    const t = marginTone(c);
+    c.width = c.height = 1;
+    if (t) samples.push(t);
+  }
+  return toneOf(samples);
+}
+
+// ---------------------------------------------------------------------------------------------
 // Colour analysis of the cover
 
 function rgbToHsl(r, g, b) {

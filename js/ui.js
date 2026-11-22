@@ -574,14 +574,16 @@ export class UI {
         });
         list.appendChild(li);
       });
-      if (!app.shelves.length) list.innerHTML = '<li class="note">No shelves yet. Name one below, then give it books from its name plate or a book’s details.</li>';
+      if (!app.shelves.length) list.innerHTML = '<li class="note">No shelves yet. Name one below, then give it books from its name here or a book’s details.</li>';
     }
+    // labels and name plates hang on a plank's edge: without a plank there are none
+    const plank = app.plank !== 'none';
     const notes = {
       none: 'One shelf, in the order you choose.',
-      author: 'A section for every author with two or more books; the others stand under their letter. Tap a label on the shelf’s edge to go to its section.',
-      letter: 'A section for every first letter of the title. Tap a label on the shelf’s edge to go to it.',
+      author: `A section for every author with two or more books; the others stand under their letter.${plank ? ' Tap a label on the shelf’s edge to go to its section.' : ' Their labels sit on a shelf’s edge: pick one under Shelf.'}`,
+      letter: `A section for every first letter of the title.${plank ? ' Tap a label on the shelf’s edge to go to it.' : ' Their labels sit on a shelf’s edge: pick one under Shelf.'}`,
       status: 'Reading now, not started, finished.',
-      shelves: 'A bookcase of your own shelves, one shelf per book. Swipe up and down between them; tap a shelf’s name plate to rename it or choose its books.',
+      shelves: `A bookcase of your own shelves, one shelf per book. Swipe up and down between them; ${plank ? 'tap a shelf’s name plate (or its name here)' : 'tap a shelf’s name here'} to rename it or choose its books.`,
     };
     let note = notes[app.group] || '';
     if (app.sort === 'manual') note += ' Press and hold a book to carry it to a new place.';

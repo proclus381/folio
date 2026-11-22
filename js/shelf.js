@@ -353,8 +353,10 @@ export class Shelf {
     if (deco.plank) this.group.add(deco.plank);
     // (no bookends: they cut through the first and last book when it opened)
     // section labels (a row in sections, or the named sections of one of your shelves) and the shelf's name
-    // plate (the bookcase)
-    if (row.sections && (row.sections.length > 1 || row.editableSections)) {
+    // plate (the bookcase). They are fixed to a plank's edge: with no plank there are none (the shelves are still
+    // in Arrange's list), and the books on no shelf of yours never get a plate.
+    const labelled = this.plankStyle !== 'none';
+    if (labelled && row.sections && (row.sections.length > 1 || row.editableSections)) {
       row.sections.forEach((s, i) => {
         if (!s.label) return; // a shelf's books outside any section stand first, unlabelled
         const m = makeLabel(labelText(s.label), LABEL_H);
@@ -363,7 +365,7 @@ export class Shelf {
         deco.labels.push(m);
       });
     }
-    if (this.mode === 'case') {
+    if (labelled && this.mode === 'case' && row.shelfId) {
       const m = makeLabel(labelText(row.label) || 'Shelf', LABEL_H * 1.15, { strong: true });
       m.userData.plate = { row };
       this.group.add(m);
@@ -738,8 +740,10 @@ export class Shelf {
       if (Math.abs(e.yaw - prev) > 1e-5) moving = true;
       // lazily hold covers for books near the centre of the current shelf
       const dist = Math.abs(i - pc);
+      // (the shelf you look at lets go of covers far from the middle too: before, only other shelves did, so
+      // browsing a long shelf kept every cover passed on the GPU)
       if (current && dist < 4.5) this.ensureCover(e);
-      else if ((dist > 8 || !current) && e.coverState === 'ready' && Math.abs(ri - this.rowPos) > 1.2) this.releaseCover(e);
+      else if (e.coverState === 'ready' && (current ? dist > 8 : Math.abs(ri - this.rowPos) > 1.2)) this.releaseCover(e);
     }
 
     // footprints, with a gap between sections
@@ -792,7 +796,7 @@ export class Shelf {
     const d = row.deco;
     const reading = !!(this.app.reader && this.app.reader.isOpen);
     if (d && d.labels.length) {
-      const yL = rowY + BASE_Y - (this.plankStyle === 'none' ? 0.7 : (d.plank ? d.plank.userData.thickness : 1.3) / 2);
+      const yL = rowY + BASE_Y - (d.plank ? d.plank.userData.thickness : 1.3) / 2;
       const placed = [];
       d.labels.forEach((m) => {
         const s = row.sections[m.userData.tab.section];
@@ -842,7 +846,7 @@ export class Shelf {
       const app = this.app;
       const halfW = Math.tan(((app.camera.fov * Math.PI) / 180) / 2) * (app.cameraBase.z - FRONT_Z) * (app.width / app.height);
       const t = d.plank ? d.plank.userData.thickness : 1.3;
-      d.plate.position.set(app.cameraBase.x - halfW * 0.9 + d.plate.userData.width / 2, rowY + BASE_Y - (this.plankStyle === 'none' ? 0.8 : t / 2), FRONT_Z + 0.04);
+      d.plate.position.set(app.cameraBase.x - halfW * 0.9 + d.plate.userData.width / 2, rowY + BASE_Y - t / 2, FRONT_Z + 0.04);
       d.plate.visible = visible && Math.abs(this.rows.indexOf(row) - this.rowPos) < 0.6 && !(this.app.reader && this.app.reader.isOpen);
     }
     if (!row.entries.length) for (const b of d.ends) b.visible = false;
@@ -900,3 +904,4 @@ export class Shelf {
 function spineTexture(meta, look, arc, Hc, aniso) {
   return stampedTexture(makeSpineCanvas(meta, look, arc, Hc), makeSpineCanvas(meta, look, arc, Hc, true), aniso);
 }
+
