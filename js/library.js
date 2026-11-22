@@ -222,7 +222,8 @@ export async function exportAnnotated(meta) {
         x: 0,
         y: 0,
         color: rgb(look.rgb[0] / 255, look.rgb[1] / 255, look.rgb[2] / 255),
-        opacity: look.alpha,
+        // a pencil's grain stays on screen; in the PDF it is an even grey of the same weight
+        opacity: look.alpha * look.cover,
         blendMode: look.kind === 'pen' ? BlendMode.Normal : BlendMode.Multiply,
       });
       count++;

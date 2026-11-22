@@ -8,7 +8,7 @@ import { PAPER_TYPES, PAPER_ORDER, GSM_RANGE, fullSettings, resolvePaper, descri
 import { LIGHTS } from './lighting.js';
 import { GROUPS, ORDERS, sectionsOf } from './arrange.js';
 import { PLANK_STYLES } from './shelfdeco.js';
-import { inkSettings, PEN_COLORS, MARKER_COLORS, RANGES, TOOL_KIND, makeStroke, drawStroke, pressureFactor } from './ink.js';
+import { inkSettings, PEN_COLORS, MARKER_COLORS, PENCIL_COLORS, PENCIL_GRADES, RANGES, TOOL_KIND, makeStroke, drawStroke, pointFactors } from './ink.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -84,7 +84,7 @@ export class UI {
     $('rb-undo').addEventListener('click', () => r().undo());
     $('rb-mag').addEventListener('click', () => app.toggleMagnifier());
     this.initLightPop();
-    for (const id of ['rb-pink', 'rb-yellow', 'rb-pen', 'rb-eraser']) {
+    for (const id of ['rb-pink', 'rb-yellow', 'rb-pen', 'rb-pencil', 'rb-eraser']) {
       const b = $(id);
       const tool = b.dataset.tool;
       b.title = 'Hold for settings';
@@ -248,6 +248,7 @@ export class UI {
       ['rb-pink', 'pink'],
       ['rb-yellow', 'yellow'],
       ['rb-pen', 'pen'],
+      ['rb-pencil', 'pencil'],
       ['rb-eraser', 'eraser'],
     ])
       $(id).setAttribute('aria-pressed', String(s.tool === tool));
@@ -716,7 +717,7 @@ export class UI {
     const el = $('ink-pop');
     const show = (force ?? el.hidden) && !!tool;
     el.hidden = !show;
-    for (const id of ['rb-pink', 'rb-yellow', 'rb-pen', 'rb-eraser']) $(id).setAttribute('aria-expanded', String(show && $(id).dataset.tool === tool));
+    for (const id of ['rb-pink', 'rb-yellow', 'rb-pen', 'rb-pencil', 'rb-eraser']) $(id).setAttribute('aria-expanded', String(show && $(id).dataset.tool === tool));
     if (!show) return;
     this.toggleGoto(false);
     this.toggleLightPop(false);
@@ -743,6 +744,14 @@ export class UI {
         this.syncInkPop();
       }),
     );
+    pop.querySelectorAll('[data-grade]').forEach((b) => {
+      const g = PENCIL_GRADES.find((x) => x.id === b.dataset.grade);
+      b.title = g.name;
+      b.addEventListener('click', () => {
+        inkSettings.set('pencil', 'grade', b.dataset.grade);
+        this.buildInkPop(); // the graphite swatch takes the lead's grey
+      });
+    });
     // keep keys typed into the sliders away from the reader's shortcuts
     pop.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') e.stopPropagation();
@@ -755,7 +764,7 @@ export class UI {
     const tool = this.inkTool;
     const kind = tool === 'eraser' ? 'eraser' : TOOL_KIND[tool];
     const st = inkSettings.get(tool);
-    const names = { pen: 'Pen', marker: 'Highlighter', eraser: 'Eraser' };
+    const names = { pen: 'Pen', pencil: 'Pencil', marker: 'Highlighter', eraser: 'Eraser' };
     $('ip-title').textContent = `[ ${names[kind]} ]`;
     const show = {
       color: kind !== 'eraser',
@@ -764,13 +773,15 @@ export class UI {
       opacity: kind === 'marker',
       smooth: kind !== 'eraser',
       tip: kind === 'marker',
+      grade: kind === 'pencil',
     };
     $('ink-pop').querySelectorAll('.ip-row').forEach((row) => (row.hidden = !show[row.dataset.k]));
     // colours
     const box = $('ip-colors');
     box.textContent = '';
     if (show.color) {
-      const list = kind === 'pen' ? PEN_COLORS : MARKER_COLORS;
+      const list = kind === 'pen' ? PEN_COLORS : kind === 'pencil' ? PENCIL_COLORS : MARKER_COLORS;
+      const lead = inkSettings.pencilGrade();
       for (const c of list) {
         const b = document.createElement('button');
         b.type = 'button';
@@ -778,7 +789,7 @@ export class UI {
         b.setAttribute('aria-label', c.name);
         b.dataset.color = c.id;
         const i = document.createElement('i');
-        i.style.setProperty('--sw', c.ui || `rgb(${c.rgb.join(',')})`);
+        i.style.setProperty('--sw', c.rgb ? c.ui || `rgb(${c.rgb.join(',')})` : `rgb(${lead.rgb.map((v) => Math.round(v + (255 - v) * 0.18)).join(',')})`);
         b.appendChild(i);
         b.addEventListener('click', () => {
           inkSettings.set(tool, 'color', c.id);
@@ -802,7 +813,9 @@ export class UI {
     $('ip-note').textContent =
       kind === 'eraser'
         ? 'Touch a mark to lift it off the page.'
-        : this.app.penSeen
+        : kind === 'pencil'
+          ? 'Press harder for a darker line. Lay the Pencil low to shade with the side of the lead.'
+          : this.app.penSeen
           ? 'Pressure follows the Apple Pencil; fingers draw at an even weight.'
           : 'With an Apple Pencil the line follows how hard you press. Fingers and mice draw at an even weight.';
     this.syncInkPop();
@@ -819,6 +832,7 @@ export class UI {
     if (st.smooth != null) $('ip-smooth-v').textContent = st.smooth > 0 ? pct(st.smooth) : 'Off';
     $('ip-colors').querySelectorAll('[data-color]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.color === st.color)));
     $('ink-pop').querySelectorAll('[data-tip]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.tip === st.tip)));
+    $('ink-pop').querySelectorAll('[data-grade]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.grade === st.grade)));
     this.drawInkPreview();
   }
 
@@ -867,14 +881,16 @@ export class UI {
     for (let i = 0; i <= n; i++) {
       const t = i / n;
       const x = cv.width * (0.06 + 0.88 * t);
-      const y = kind === 'pen' ? cv.height * (0.5 + 0.26 * Math.sin(t * Math.PI * 3.2)) : cv.height * 0.5 - lh * 0.05 + Math.sin(t * 7) * lh * 0.06;
+      const y = kind !== 'marker' ? cv.height * (0.5 + 0.26 * Math.sin(t * Math.PI * 3.2)) : cv.height * 0.5 - lh * 0.05 + Math.sin(t * 7) * lh * 0.06;
       // a stroke as a Pencil draws it: light in, firm through the middle, lifting off
       const p = 0.06 + 0.5 * Math.sin(Math.PI * Math.min(1, t * 1.15));
+      const f = pointFactors(tool, p, sens);
       s.pts.push(x / pageW, y / pageW);
-      s.wf.push(pressureFactor(kind, p, sens));
+      s.wf.push(f.wf);
+      if (s.gf) s.gf.push(f.gf);
     }
     ctx.save();
-    if (kind === 'marker') ctx.globalCompositeOperation = 'multiply';
+    if (kind !== 'pen') ctx.globalCompositeOperation = 'multiply';
     drawStroke(ctx, s, pageW, pageW);
     ctx.restore();
   }
@@ -889,6 +905,8 @@ export class UI {
     }
     const pc = inkSettings.penColor();
     $('rb-pen').style.color = pc.id === 'ink' ? '' : `rgb(${pc.rgb.join(',')})`;
+    const gc = inkSettings.pencilColor();
+    $('rb-pencil').style.color = gc.rgb ? `rgb(${gc.rgb.join(',')})` : '';
   }
   syncGoto() {
     const s = this.barState;
@@ -953,7 +971,7 @@ export class UI {
          <span>← →</span><span>Browse / turn pages</span>
          <span>Enter</span><span>Open book</span>
          <span>Esc</span><span>Close / back</span>
-         <span>H P E</span><span>Highlighter, pen, eraser</span>
+         <span>H P G E</span><span>Highlighter, pen, pencil, eraser</span>
          <span>B</span><span>Bookmark spread</span>
          <span>R</span><span>Back to where you were reading</span>
          <span>+ − 0</span><span>Zoom</span>
@@ -1338,7 +1356,7 @@ export class UI {
             .slice(0, 200)
             .map((p) => `<li><button type="button" data-mpage="${p}"><span>Page ${p}</span><span class="pg">${marks.get(p).length}</span></button></li>`)
             .join('')}</ul>`
-        : '<p class="note">No highlights yet. Pick a highlighter or the pen in the reader bar. With an Apple Pencil, the pencil draws and fingers keep turning pages.</p>'
+        : '<p class="note">No highlights yet. Pick a highlighter, the pen or the pencil in the reader bar. With an Apple Pencil, the pencil draws and fingers keep turning pages.</p>'
     }`;
     sec.querySelectorAll('[data-mpage]').forEach((b) =>
       b.addEventListener('click', () => {

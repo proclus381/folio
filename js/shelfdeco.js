@@ -1,5 +1,4 @@
-// The furniture of the shelf: the plank the books stand on (painted, oak or glass, or none), the bookends at
-// the ends of a row, and the labels — little brass label holders on the plank's edge that name a section
+// The furniture of the shelf: the plank the books stand on (painted, oak or glass, or none), and the labels — little brass label holders on the plank's edge that name a section
 // (like the strips on a library's shelves) or a whole shelf of the bookcase.
 
 import * as THREE from 'three';
@@ -107,29 +106,6 @@ export function makePlank(style, dark, z0, z1) {
     g.userData.mats.push(edge, brass);
   }
   g.userData.thickness = t;
-  return g;
-}
-
-// ------------------------------------------------------------------ bookends
-let bookendGeo = null;
-const bookendMat = new THREE.MeshStandardMaterial({ color: 0x3a342d, metalness: 0.65, roughness: 0.42 });
-/** An L-shaped cast-iron bookend: an upright plate (facing along x) and a foot under the end book. */
-export function makeBookend(depth) {
-  if (!bookendGeo) {
-    const up = new THREE.BoxGeometry(0.32, 9, 1);
-    up.translate(0, 4.5, 0);
-    const foot = new THREE.BoxGeometry(2.4, 0.12, 1);
-    foot.translate(1.2, 0.06, 0);
-    bookendGeo = { up, foot };
-  }
-  const g = new THREE.Group();
-  const up = new THREE.Mesh(bookendGeo.up, bookendMat);
-  up.scale.z = depth * 0.62;
-  const foot = new THREE.Mesh(bookendGeo.foot, bookendMat);
-  foot.scale.z = depth * 0.62;
-  up.castShadow = foot.castShadow = true;
-  up.receiveShadow = true;
-  g.add(up, foot);
   return g;
 }
 

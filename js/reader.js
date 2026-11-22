@@ -6,7 +6,7 @@ import { BookModel } from './book3d.js';
 import { Leaf, makePageMaterial, surfaceTable, NX, NY } from './leaf.js';
 import { FLAG, flagsOf, makeFlagMesh, flagMatrix, flagScreenBox, pickBox, layerAt } from './markers.js';
 import { applyPaper } from './paper.js';
-import { InkLayer } from './ink.js';
+import { InkLayer, warmGraphite } from './ink.js';
 import { openPdf, renderPageToCanvas, renderQueue, readOutline } from './pdfdoc.js';
 import { canvasTexture, makePaperCanvas } from './textures.js';
 import { SHELF_Z } from './shelf.js';
@@ -138,7 +138,7 @@ export class Reader {
     app.shelf.hiddenEntry = entry;
     app.shelf.openGapWidth = this.computeGapWidth();
 
-    this.ink = new InkLayer(this.meta.id, d.Wp / d.Hp, (page) => this.onInkChanged(page));
+    this.ink = new InkLayer(this.meta.id, d.Wp / d.Hp, (page) => this.onInkChanged(page), () => app.invalidate());
     this.ink.load().then(() => this.refreshAllLeafTextures());
     this.computeTexHeight();
 
@@ -438,8 +438,37 @@ export class Reader {
     const env = { Wp: d.Wp, Hp: d.Hp, tabR: this.tabR, tabL: this.tabL };
     for (const leaf of this.leafOf.values()) leaf.deform(env);
     if (this.updateMarkers(dt, leftCount)) busy = true;
+    // ink drawn since the last frame: just the changed pixels, onto the GPU in place
+    if (this.ink) this.ink.flush(this.uploadRect);
     return busy;
   }
+
+  /**
+   * Put one rectangle of an ink layer's canvas onto its texture on the GPU (texSubImage2D), instead of sending
+   * the whole page again. Returns false when the texture isn't on the GPU yet (three then uploads all of it).
+   */
+  uploadRect = (tex, canvas, r) => {
+    const renderer = this.app.renderer;
+    const props = renderer.properties.get(tex);
+    const glTex = props.__webglTexture;
+    if (!glTex || props.__version !== tex.version) return false;
+    try {
+      const gl = renderer.getContext();
+      const img = canvas.getContext('2d', { willReadFrequently: true }).getImageData(r.x, r.y, r.w, r.h);
+      renderer.state.bindTexture(gl.TEXTURE_2D, glTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, tex.flipY);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, tex.premultiplyAlpha);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+      gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+      // three flipped the canvas on its way up: count rows from the bottom
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, r.x, tex.flipY ? canvas.height - r.y - r.h : r.y, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      if (tex.generateMipmaps) gl.generateMipmap(gl.TEXTURE_2D);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
 
   // =============================================================== flags
   initMarkers() {
@@ -1259,7 +1288,7 @@ export class Reader {
           this.ink.eraseAt(hit.page, hit.u, hit.v);
           this.drawing = { mode: 'erase', leaf: hit.leaf, front: hit.front, pen, id: e.pointerId };
         } else {
-          this.ink.begin(hit.page, this.tool, hit.u, hit.v, penPressure(e));
+          this.ink.begin(hit.page, this.tool, hit.u, hit.v, penPressure(e), penTilt(e));
           this.drawing = { mode: 'ink', leaf: hit.leaf, front: hit.front, page: hit.page, pen, id: e.pointerId };
         }
         this.app.ui.closePopovers();
@@ -1321,7 +1350,16 @@ export class Reader {
         const hit = this.hitPage(ev.clientX, ev.clientY);
         if (!hit || hit.leaf !== this.drawing.leaf || hit.front !== this.drawing.front) continue;
         if (this.drawing.mode === 'erase') this.ink.eraseAt(hit.page, hit.u, hit.v);
-        else if (hit.page === this.drawing.page) this.ink.extend(hit.u, hit.v, penPressure(ev));
+        else if (hit.page === this.drawing.page) this.ink.extend(hit.u, hit.v, penPressure(ev), penTilt(ev));
+      }
+      // draw a little ahead, to where the Pencil is predicted to be next (where the browser says)
+      if (this.drawing.mode === 'ink' && e.getPredictedEvents) {
+        const pred = [];
+        for (const ev of e.getPredictedEvents().slice(0, 3)) {
+          const hit = this.hitPage(ev.clientX, ev.clientY);
+          if (hit && hit.leaf === this.drawing.leaf && hit.front === this.drawing.front && hit.page === this.drawing.page) pred.push(hit.u, hit.v);
+        }
+        this.ink.predict(pred);
       }
       this.app.invalidate();
       return;
@@ -1621,6 +1659,7 @@ export class Reader {
     if (!this.tool) this.app.ui.toggleInkPop(false);
     this.hover.target = 0;
     this.app.canvas.style.cursor = this.tool ? 'crosshair' : 'default';
+    if (this.tool === 'pencil') setTimeout(warmGraphite, 0);
     this.updateBar();
   }
 
@@ -1715,6 +1754,9 @@ export class Reader {
       case 'p':
         this.setTool('pen');
         return true;
+      case 'g':
+        this.setTool('pencil');
+        return true;
       case 'e':
         this.setTool('eraser');
         return true;
@@ -1734,4 +1776,14 @@ export class Reader {
 /** Apple Pencil pressure (0…1); fingers and mice have none and draw at an even weight. */
 function penPressure(e) {
   return e.pointerType === 'pen' ? Math.max(0.02, e.pressure || 0) : null;
+}
+
+/** How high the Pencil stands over the page (radians, π/2 upright), or null when the device doesn't say. */
+function penTilt(e) {
+  if (e.pointerType !== 'pen') return null;
+  if (typeof e.altitudeAngle === 'number' && (e.tiltX || e.tiltY || e.altitudeAngle !== Math.PI / 2)) return e.altitudeAngle;
+  if (!e.tiltX && !e.tiltY) return null; // no tilt reported (or truly upright: nothing to shade either way)
+  const tx = Math.tan((e.tiltX * Math.PI) / 180);
+  const ty = Math.tan((e.tiltY * Math.PI) / 180);
+  return Math.atan(1 / Math.hypot(tx, ty));
 }

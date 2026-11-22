@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { BookModel, bookDims, makeBookMaterials, restyleBookMaterials, SHELF_SCALE } from './book3d.js';
 import { setBindingArt } from './binding.js';
 import { makeClothCoverCanvas, makeImageCoverCanvas, makeSpineCanvas, stampedTexture } from './textures.js';
-import { makeBookend, makeLabel, makePlank, labelText } from './shelfdeco.js';
+import { makeLabel, makePlank, labelText } from './shelfdeco.js';
 import { flagsOf, shelfFlagMesh, flagScreenBox, pickBox } from './markers.js';
 
 import { clamp, smoothDamp, smoothstep } from './anim.js';
@@ -351,14 +351,7 @@ export class Shelf {
   buildDeco(row) {
     const deco = { plank: makePlank(this.plankStyle, this.dark, BACK_Z, FRONT_Z), ends: [], labels: [] };
     if (deco.plank) this.group.add(deco.plank);
-    if (row.entries.length) {
-      for (const side of [-1, 1]) {
-        const b = makeBookend(13);
-        if (side > 0) b.rotation.y = Math.PI;
-        this.group.add(b);
-        deco.ends.push(b);
-      }
-    }
+    // (no bookends: they cut through the first and last book when it opened)
     // section labels (a row in sections, or the named sections of one of your shelves) and the shelf's name
     // plate (the bookcase)
     if (row.sections && (row.sections.length > 1 || row.editableSections)) {
@@ -795,16 +788,8 @@ export class Shelf {
       e.slot.rotation.y = e.yaw;
       e.slot.visible = visible && e !== this.hiddenEntry;
     }
-    // bookends hug the row's ends; section labels sit on the plank's edge under their sections
+    // section labels sit on the plank's edge under their sections
     const d = row.deco;
-    if (d && d.ends.length) {
-      const first = row.entries[0];
-      const last = row.entries[n - 1];
-      const zMid = SHELF_Z - 6.4;
-      d.ends[0].position.set(first.x - first.footprint / 2 - 0.05, rowY + BASE_Y, zMid);
-      d.ends[1].position.set(last.x + last.footprint / 2 + 0.05, rowY + BASE_Y, zMid);
-      for (const b of d.ends) b.visible = visible;
-    }
     const reading = !!(this.app.reader && this.app.reader.isOpen);
     if (d && d.labels.length) {
       const yL = rowY + BASE_Y - (this.plankStyle === 'none' ? 0.7 : (d.plank ? d.plank.userData.thickness : 1.3) / 2);
