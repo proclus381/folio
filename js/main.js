@@ -20,8 +20,10 @@ import {
   makeGrainTexture,
   makeDeferredPaperTextures,
   makePageEdgeTexture,
+  makeMarksTexture,
   luminance,
 } from './textures.js';
+import { resolvePaper, loadLibraryPaper, saveLibraryPaper, loadLivingWear, saveLivingWear } from './paper.js';
 import { clamp, lerp } from './anim.js';
 
 const DEG = Math.PI / 180;
@@ -93,6 +95,9 @@ class App {
     this.plank = pref('plank', 'none');
     this.shelves = loadShelves();
     this.marks = new Map();
+    this.libraryPaper = loadLibraryPaper(); // the paper of every book that hasn't one of its own
+    this.livingWear = loadLivingWear(); // books wear as you read them (an option in Settings)
+    this.handledCache = new WeakMap();
     this.theme = pref('theme', 'light');
     this.dirty = 3;
     this.lastT = performance.now() / 1000;
@@ -197,8 +202,10 @@ class App {
     const edge = makePageEdgeTexture();
     const grain = makeGrainTexture();
     const paper = makeDeferredPaperTextures();
+    paper.marks = makeMarksTexture(); // foxing, soil, a deckled edge (paper.js)
     paper.onReady = () => this.invalidate();
-    setTimeout(() => paper.fill(), 1500);
+    // the library's paper first; a book's own type is made when it is chosen (onSelect)
+    setTimeout(() => paper.use(resolvePaper(this.libraryPaper).type), 1500);
     paper.repeat = new THREE.Vector2(1.5, 2.25);
     this.shared = {
       grain,
@@ -398,6 +405,99 @@ class App {
     this.invalidate();
   }
 
+  // ---------------------------------------------------------------- paper
+  /** A book's paper, ready for the renderer: its own, or the library's (paper.js). */
+  paperFor(meta) {
+    return resolvePaper(meta.paper || this.libraryPaper, {
+      scanTone: meta.pageTone || null,
+      lived: this.livingWear ? this.livedWear(meta) : 0,
+    });
+  }
+
+  /**
+   * Give a book its own paper (settings, see paper.fullSettings), or back to the library's (null). `final`:
+   * the change is done (a slider let go): save it and stand the shelf again (a new weight is a new thickness).
+   * While the slider moves, an open book shows it at once.
+   */
+  setBookPaper(meta, settings, { final = true } = {}) {
+    if (settings) meta.paper = { ...settings };
+    else delete meta.paper;
+    if (this.reader.isOpen && this.reader.meta === meta) this.reader.applyPaper();
+    if (!final) return;
+    store.putBook(meta).catch(() => {});
+    this.repaper();
+  }
+
+  /** The library's paper (every book without its own). */
+  setLibraryPaper(settings, { final = true } = {}) {
+    this.libraryPaper = { ...settings };
+    if (this.reader.isOpen && !this.reader.meta.paper) this.reader.applyPaper();
+    if (!final) return;
+    saveLibraryPaper(this.libraryPaper);
+    this.repaper();
+  }
+
+  setLivingWear(on) {
+    this.livingWear = !!on;
+    saveLivingWear(this.livingWear);
+    if (this.reader.isOpen) this.reader.applyPaper();
+    this.repaper();
+  }
+
+  /** Papers changed: page blocks recoloured, and books whose paper got thicker or thinner rebuilt. */
+  repaper() {
+    if (this.reader.isOpen) {
+      // the open book keeps its shape until it is closed
+      this.libraryDirty = true;
+      for (const e of this.shelf.all.values()) if (e !== this.shelf.hiddenEntry) this.shelf.syncPaper(e);
+      return;
+    }
+    const cur = this.currentMeta();
+    this.arrange(cur && cur.id);
+    this.invalidate();
+  }
+
+  /** Wear from reading (0…1): grows with the pages turned by hand, ≈ 0.15 after reading a 600-page book once. */
+  livedWear(meta) {
+    return 1 - Math.exp(-(meta.turns || 0) / 1800);
+  }
+
+  /** Whether leaf k of a book has been turned by hand (books wear as you read them). */
+  handled(meta, k) {
+    const bits = this.handledBits(meta);
+    return k >= 0 && (bits[k >> 3] & (1 << (k & 7))) !== 0;
+  }
+
+  handledBits(meta) {
+    let c = this.handledCache.get(meta);
+    if (!c || c.src !== meta.handled) {
+      const n = Math.ceil(Math.ceil((meta.pages || 1) / 2) / 8);
+      const bits = new Uint8Array(n);
+      try {
+        if (meta.handled) {
+          const raw = atob(meta.handled);
+          for (let i = 0; i < Math.min(n, raw.length); i++) bits[i] = raw.charCodeAt(i);
+        }
+      } catch {
+        /* start afresh */
+      }
+      c = { src: meta.handled, bits };
+      this.handledCache.set(meta, c);
+    }
+    return c.bits;
+  }
+
+  /** A leaf turned by hand: remember it and count the turn (saved a moment later). */
+  noteTurn(meta, k) {
+    const bits = this.handledBits(meta);
+    if (k >> 3 < bits.length) bits[k >> 3] |= 1 << (k & 7);
+    meta.handled = btoa(String.fromCharCode(...bits));
+    this.handledCache.get(meta).src = meta.handled;
+    meta.turns = (meta.turns || 0) + 1;
+    clearTimeout(this.turnSaveT);
+    this.turnSaveT = setTimeout(() => store.putBook(meta).catch(() => {}), 2000);
+  }
+
   // ---------------------------------------------------------------- your shelves
   createShelf(name) {
     const s = { id: newShelfId(), name: (name || '').trim().slice(0, 40) || 'New shelf' };
@@ -500,6 +600,8 @@ class App {
 
   onSelect(entry) {
     if (this.peek && this.peek.where === 'shelf' && this.peek.entry !== entry) this.clearPeek();
+    // its paper's maps, ready by the time it opens
+    this.shared.paper.prepare(this.paperFor(entry.meta).type);
     this.ui.setNow(entry.meta);
     if (this.theme === 'color') this.ui.setTheme('color', entry.look);
   }

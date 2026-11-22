@@ -110,7 +110,9 @@ export class Shelf {
     const rows = layout.rows.map((lr) => {
       const entries = lr.metas.map((meta) => {
         let e = this.all.get(meta.id);
-        if (e && (e.d.pages !== meta.pages || e.d.aspect !== bookDims(meta.pages, meta.aspect).aspect)) {
+        // a new page count, shape or paper thickness (or edges going gilt) means a new model
+        const pr = this.app.paperFor(meta);
+        if (e && (e.d.pages !== meta.pages || e.d.aspect !== bookDims(meta.pages, meta.aspect).aspect || Math.abs(e.d.calRel - pr.calRel) > 1e-6 || e.paperEdge !== pr.edge)) {
           this.disposeEntry(e);
           e = null;
         }
@@ -121,6 +123,7 @@ export class Shelf {
         e.meta = meta;
         keep.add(meta.id);
         this.syncMarkers(e);
+        this.syncPaper(e, pr);
         return e;
       });
       const old = prevRows.get(lr.key);
@@ -183,11 +186,12 @@ export class Shelf {
 
   buildEntry(meta) {
     const app = this.app;
-    const d = bookDims(meta.pages, meta.aspect);
+    const pr = app.paperFor(meta);
+    const d = bookDims(meta.pages, meta.aspect, pr.calRel);
     const look = meta.look;
     const arc = d.T + 0.35;
     const tex = { spine: spineTexture(meta, look, arc, d.Hc, app.maxAniso) };
-    const mats = makeBookMaterials(look, tex, app.shared, d); // the cover shows plain binding until its art exists
+    const mats = makeBookMaterials(look, tex, app.shared, d, pr); // the cover shows plain binding until its art exists
     const model = new BookModel(d, mats, { withLeftStack: false });
     model.set(Math.PI, 0, 0);
     const slot = new THREE.Group();
@@ -195,7 +199,7 @@ export class Shelf {
     model.group.position.copy(d.center).multiplyScalar(-1);
     slot.add(model.group);
     this.group.add(slot);
-    const e = { meta, d, look, tex, mats, model, slot, yaw: Math.PI / 2, yawV: { v: 0 }, coverState: 'none', x: 0, z: SHELF_Z, row: 0, off: null, marks: null };
+    const e = { meta, d, look, tex, mats, model, slot, yaw: Math.PI / 2, yawV: { v: 0 }, coverState: 'none', x: 0, z: SHELF_Z, row: 0, off: null, marks: null, paperEdge: pr.edge };
     for (const m of model.pickables()) m.userData.entry = e;
     this.syncMarkers(e);
     return e;
@@ -246,6 +250,10 @@ export class Shelf {
     this.group.remove(e.slot);
     e.model.dispose();
     for (const k of ['cover', 'back', 'cloth', 'endpaper', 'spine']) e.mats[k].dispose();
+    if (e.mats.ownBlock) {
+      e.mats.paper.dispose();
+      e.mats.edge.dispose();
+    }
     e.tex.spine.dispose();
     if (e.coverTex) e.coverTex.dispose();
   }
@@ -263,6 +271,14 @@ export class Shelf {
     this.releaseCover(e);
     this.ensureCover(e);
     this.syncMarkers(e);
+  }
+
+  /** A book's page block in its paper's colours (toning and soil change them without a new model). */
+  syncPaper(e, pr = this.app.paperFor(e.meta)) {
+    if (!e.mats.ownBlock) return;
+    e.mats.paper.color.copy(pr.block);
+    if (pr.edge !== 'gilt') e.mats.edge.color.copy(pr.edgeColor);
+    this.app.invalidate();
   }
 
   // ------------------------------------------------------------------ flags

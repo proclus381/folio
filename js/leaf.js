@@ -69,6 +69,15 @@ function paperUniforms(paper) {
       mottleK: { value: 0.03 }, // the surface's streaks and cloud, faintly in its colour too
       cockleK: { value: 0.04 }, // slope of the sheet's slow waviness
       transmit: { value: 0.34 }, // diffuse transmittance of the sheet
+      // the paper's type and condition (paper.js): all zero for the paper Folio always had
+      paperMarks: { value: paper.marks }, // foxing spots, soil blotches, a ragged line (textures.makeMarksTexture)
+      pageSize: { value: new THREE.Vector2(15, 22.6) }, // cm, so marks keep their physical size
+      ageTone: { value: 0 }, // toning in from the head, tail and fore-edge
+      foxK: { value: 0 }, // foxing
+      laidK: { value: 0 }, // laid and chain lines (laid paper)
+      deckleK: { value: 0 }, // a deckled (rough-cut) fore-edge
+      pagePaper: { value: new THREE.Color(1, 1, 1) }, // a scan's own paper colour: what shows through is its ink, not that
+      glossMottle: { value: 0 }, // coated paper: glossier on the coating's peaks, duller in its hollows
       // a soft second light skimming the page from the upper left (in book space), so the paper's relief
       // reads even under the flat key light; only its variation is added, the page does not get brighter
       rakeDir: { value: new THREE.Vector3(-0.55, 0.75, 0.36).normalize() },
@@ -114,6 +123,7 @@ export function makePageMaterial(paper) {
     inkBack: { value: clearInk },
     paperSeed: { value: new THREE.Vector2() }, // every sheet is cut from a different part of the roll
     turnLift: { value: 0 }, // sin(π·t): 0 lying on a stack, 1 standing up
+    soil: { value: 0 }, // finger soil on this leaf's outer corners (wear; per leaf when books wear as you read)
   };
   mat.userData.u = u;
   mat.onBeforeCompile = (shader) => {
@@ -142,6 +152,15 @@ uniform float mottleK;
 uniform float cockleK;
 uniform float turnLift;
 uniform float transmit;
+uniform sampler2D paperMarks;
+uniform vec2 pageSize;
+uniform float ageTone;
+uniform float foxK;
+uniform float laidK;
+uniform float deckleK;
+uniform vec3 pagePaper;
+uniform float glossMottle;
+uniform float soil;
 uniform vec3 rakeColor;
 varying vec2 vPageUv;
 varying vec3 vRake;
@@ -163,6 +182,12 @@ float folioHash(vec2 p) {
         '#include <map_fragment>',
         `vec2 puv = gl_FrontFacing ? vPageUv : vec2(1.0 - vPageUv.x, vPageUv.y);
 vec2 ouv = vec2(1.0 - puv.x, puv.y); // this spot, seen from the other side
+vec2 pcm = vPageUv * pageSize; // this spot on the sheet, in cm from the gutter's foot (the same on both faces)
+// a deckled fore-edge: the sheet ends raggedly, a few tenths of a millimetre to two and a half
+if (deckleK > 0.0) {
+  float rag = texture2D(paperMarks, vec2(0.5, pcm.y * 0.3 + paperSeed.x)).b;
+  if (pageSize.x - pcm.x < deckleK * (0.04 + 0.22 * rag)) discard;
+}
 // the two sides are never printed in perfect register: the far side sits ≈1–2 mm off, a hair skewed, so its
 // lines fall between this side's lines instead of hiding behind them
 float regX = gl_FrontFacing ? ouv.x : puv.x; // across the far (even) page
@@ -175,6 +200,7 @@ float dens = fb.g; // formation: where the pulp flocked thicker, less gets throu
 // show-through: mirrored, a hair soft (light spreads a little in the sheet), subtractive — ink behind
 // absorbs, it never lightens this side
 vec3 ghost = 0.5 * (folioOther(sUv + vec2(0.0005, 0.0003), 0.6) + folioOther(sUv - vec2(0.0004, 0.0005), 0.6));
+ghost = min(vec3(1.0), ghost / pagePaper); // a scan's yellowed paper on the far side isn't ink
 vec4 oInk = folioOtherInk(sUv);
 ghost *= mix(vec3(1.0), oInk.rgb, oInk.a);
 ghost = mix(ghost, vec3(dot(ghost, vec3(0.2126, 0.7152, 0.0722))), 0.35); // colour is muted by the fibres
@@ -201,11 +227,39 @@ col *= mix(0.92, 1.0, smoothstep(1.0, 0.965, sc));
 // edges a touch toned, as paper ages from the outside in
 float eD = min(1.0 - sc, min(vPageUv.y, 1.0 - vPageUv.y));
 col *= mix(vec3(0.955, 0.94, 0.9), vec3(1.0), smoothstep(0.0, 0.035, eD));
+// age and use (paper.js). Marks are this face's own (the far face is another part of the sheet).
+vec4 mk = texture2D(paperMarks, pcm * 0.1 + paperSeed * 7.0 + (gl_FrontFacing ? vec2(0.0) : vec2(0.37, 0.61)));
+float edgeCm = min(pageSize.x - pcm.x, min(pcm.y, pageSize.y - pcm.y)); // to the head, tail or fore-edge; never the gutter
+// toning: light and air brown the exposed edges first, in an uneven band a centimetre or three deep
+float band = 1.0 - smoothstep(0.0, 1.2 + 1.8 * mk.g, edgeCm);
+col *= mix(vec3(1.0), vec3(0.86, 0.71, 0.5), ageTone * band * band);
+// foxing: reddish-brown spots, thicker toward the edges
+float fox = smoothstep(0.2, 0.85, mk.r) * foxK * mix(0.4, 1.0, 1.0 - smoothstep(0.0, 4.0, edgeCm));
+col *= mix(vec3(1.0), vec3(0.74, 0.55, 0.38), min(1.0, fox));
+// finger soil where pages are turned: the lower outer corner most, the upper a little
+float cLo = length(vec2((pageSize.x - pcm.x) * 0.8, pcm.y));
+float cHi = length(vec2((pageSize.x - pcm.x) * 0.9, pageSize.y - pcm.y));
+float thumb = (1.0 - smoothstep(0.0, 5.5, cLo)) + 0.4 * (1.0 - smoothstep(0.0, 3.5, cHi));
+col *= mix(vec3(1.0), vec3(0.86, 0.83, 0.78), clamp(soil * thumb * (0.45 + 1.1 * mk.g), 0.0, 1.0) * 0.55);
+// laid paper: laid lines ≈ 1 mm apart across the sheet, chain lines ≈ 2.5 cm apart along it. The pulp is
+// thinner over the wires, so both show lighter in light through the sheet (and a breath darker on it). Lines
+// finer than the screen can draw fade out rather than shimmer.
+float laidT = 0.0;
+float chainT = 0.0;
+if (laidK > 0.0) {
+  float lf = pcm.y * 9.0;
+  laidT = (abs(fract(lf) - 0.5) * 2.0 - 0.5) * (1.0 - smoothstep(0.15, 0.35, fwidth(lf)));
+  float cf = pcm.x / 2.5 + 0.31;
+  float cd = abs(fract(cf) - 0.5);
+  chainT = 1.0 - smoothstep(0.012, 0.012 + max(0.012, fwidth(cf)), cd);
+  col *= 1.0 - laidK * (0.012 * laidT + 0.02 * chainT);
+}
 diffuseColor.rgb *= col;`,
       )
       .replace(
         '#include <roughnessmap_fragment>',
-        `float roughnessFactor = roughness * mix(0.74, 1.0, smoothstep(0.12, 0.6, folioLum)); // ink is a touch smoother`,
+        `float roughnessFactor = roughness * mix(0.74, 1.0, smoothstep(0.12, 0.6, folioLum)); // ink is a touch smoother
+roughnessFactor *= 1.0 - glossMottle * (texture2D(normalMap, folioTuv).b - 0.5) * 1.4;`,
       )
       .replace(
         '#include <normal_fragment_maps>',
@@ -217,6 +271,12 @@ diffuseColor.rgb *= col;`,
   vec2 cg = texture2D(paperCockle, vPageUv * vec2(0.8, 0.8 * asp) + paperSeed.yx).xy * 2.0 - 1.0;
   if (!gl_FrontFacing) cg = -cg;
   vec2 g = tg * toothK + cg * cockleK;
+  if (laidK > 0.0) {
+    // laid paper's ribs: soft ridges ≈ 1 mm apart, faded where they'd be finer than the screen can draw
+    float lf2 = pcm.y * 9.0;
+    g.y += laidK * 0.14 * sin(6.2831853 * lf2) * (1.0 - smoothstep(0.15, 0.35, fwidth(lf2)));
+    g.x += laidK * 0.1 * chainT * sign(fract(pcm.x / 2.5 + 0.31) - 0.5);
+  }
   g *= vec2(max(1.0, 1.0 / asp), max(1.0, asp)); // three's tangent frame is scaled per uv unit; the maps are square in paper
   normal = normalize(tbn * vec3(g, 1.0));
 }`,
@@ -245,7 +305,9 @@ diffuseColor.rgb *= col;`,
   #pragma unroll_loop_end
   #endif
   vec3 back = 0.5 * (folioOther(sUv + vec2(0.0006, 0.0004), 0.8) + folioOther(sUv - vec2(0.0005, 0.0006), 0.8));
+  back = min(vec3(1.0), back / pagePaper);
   vec3 thru = paperCol * pg * back * mix(vec3(1.0), oInk.rgb, oInk.a) * (1.0 - gShade) * (1.3 - 0.6 * dens);
+  thru *= 1.0 + laidK * (0.1 * laidT + 0.3 * chainT);
   reflectedLight.directDiffuse += tLight * thru * (transmit * RECIPROCAL_PI);
   // the skimming light: only the relief it picks out
   vec3 R = normalize(vRake);
@@ -268,7 +330,7 @@ diffuseColor.rgb *= col;`,
 #include <opaque_fragment>`,
       );
   };
-  mat.customProgramCacheKey = () => 'folio-paper-7';
+  mat.customProgramCacheKey = () => 'folio-paper-10';
   return mat;
 }
 

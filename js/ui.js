@@ -3,7 +3,8 @@
 import { CLOTHS, themePalette } from './textures.js';
 import { clamp } from './anim.js';
 import * as store from './store.js';
-import { BINDINGS, bindingKind } from './binding.js';
+import { BINDINGS, bindingKind, defaultBinding, setDefaultBinding } from './binding.js';
+import { PAPER_TYPES, PAPER_ORDER, GSM_RANGE, fullSettings, resolvePaper, describeWeight } from './paper.js';
 import { LIGHTS } from './lighting.js';
 import { GROUPS, ORDERS, sectionsOf } from './arrange.js';
 import { PLANK_STYLES } from './shelfdeco.js';
@@ -56,6 +57,10 @@ export class UI {
       this.closePanel();
     });
     $('theme-btn').addEventListener('click', () => app.cycleTheme());
+    $('settings-btn').addEventListener('click', () => {
+      if (this.panelMode === 'settings') this.closePanel();
+      else this.openSettings();
+    });
     $('sort-btn').addEventListener('click', () => this.toggleArrangePop());
     this.initArrangePop();
     $('details-btn').addEventListener('click', () => {
@@ -926,6 +931,131 @@ export class UI {
     $('details-btn').textContent = 'VIEW DETAILS [+]';
   }
 
+  // ------------------------------------------------------------------ settings
+  /** The app's settings: the library's paper, wear as you read, binding for new books, storage, keys. */
+  openSettings() {
+    const app = this.app;
+    this.openPanel(
+      'settings',
+      '[ SETTINGS ]',
+      `<section><span class="k">[ Paper ]</span>
+         <p class="note">The paper of every book that hasn't one of its own. A book's own paper is set in its details.</p>
+         <div id="pe-lib"></div></section>
+       <section><span class="k">[ Wear ]</span>
+         <div class="seg"><button type="button" class="mono-btn" id="st-wear" aria-pressed="${app.livingWear}">${app.livingWear ? '[ ON ]' : '[ OFF ]'}</button><span class="mono dim">Books wear as you read them</span></div>
+         <p class="note">The leaves you turn pick up a little finger soil at their corners, and a book grows softer and a touch wavier the more it is read. Off, a book is as worn as its paper's Wear says.</p></section>
+       <section><span class="k">[ Binding for new books ]</span>
+         <div class="seg">${Object.entries(BINDINGS)
+           .map(([k, b]) => `<button type="button" class="mono-btn" data-newbind="${k}" aria-pressed="${defaultBinding() === k}">${b.label}</button>`)
+           .join('')}</div></section>
+       <section><span class="k">[ Storage ]</span><p class="note" id="st-storage">Checking…</p></section>
+       <section><span class="k">[ Keys ]</span><div class="facts">
+         <span>← →</span><span>Browse / turn pages</span>
+         <span>Enter</span><span>Open book</span>
+         <span>Esc</span><span>Close / back</span>
+         <span>H P E</span><span>Highlighter, pen, eraser</span>
+         <span>B</span><span>Bookmark spread</span>
+         <span>R</span><span>Back to where you were reading</span>
+         <span>+ − 0</span><span>Zoom</span>
+         <span>M</span><span>Magnifier</span>
+         <span>L</span><span>Reading light</span>
+         <span>⌘Z</span><span>Undo mark</span>
+       </div></section>`,
+    );
+    const body = this.panelBody;
+    this.mountPaperEditor(body.querySelector('#pe-lib'), app.libraryPaper, (st, final) => app.setLibraryPaper(st, { final }));
+    const wear = body.querySelector('#st-wear');
+    wear.addEventListener('click', () => {
+      app.setLivingWear(!app.livingWear);
+      wear.setAttribute('aria-pressed', String(app.livingWear));
+      wear.textContent = app.livingWear ? '[ ON ]' : '[ OFF ]';
+    });
+    body.querySelectorAll('[data-newbind]').forEach((b) =>
+      b.addEventListener('click', () => {
+        setDefaultBinding(b.dataset.newbind);
+        body.querySelectorAll('[data-newbind]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      }),
+    );
+    const st = body.querySelector('#st-storage');
+    const mb = (n) => (n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(n / 1e6))} MB`);
+    Promise.all([navigator.storage && navigator.storage.estimate ? navigator.storage.estimate() : null, navigator.storage && navigator.storage.persisted ? navigator.storage.persisted() : null])
+      .then(([est, kept]) => {
+        const n = app.metas.length;
+        let t = `${n} ${n === 1 ? 'book' : 'books'}, kept on this device only.`;
+        if (est && est.usage != null) t += ` Using ${mb(est.usage)}${est.quota ? ` of the ${mb(est.quota)} this browser allows` : ''}.`;
+        if (kept === false) t += ' The browser may clear it if space runs short: adding the app to the Home Screen keeps it.';
+        st.textContent = t;
+      })
+      .catch(() => (st.textContent = 'Kept on this device only.'));
+  }
+
+  /**
+   * The paper controls, for the library (Settings) or one book (Details): type, weight, surface (finish, for
+   * coated paper), shade, age, wear. onChange(settings, final): final=false while a slider moves (an open book
+   * shows it at once), true when it is let go or a type is chosen.
+   */
+  mountPaperEditor(host, settings, onChange) {
+    const s = fullSettings(settings);
+    const T = PAPER_TYPES[s.type];
+    const preset = fullSettings({ type: s.type });
+    // weight on a logarithmic scale (20 … 300 gsm), the rest 0 … 1
+    const [g0, g1] = GSM_RANGE;
+    const toPos = (k, v) => (k === 'gsm' ? Math.log(v / g0) / Math.log(g1 / g0) : v);
+    const fromPos = (k, p) => (k === 'gsm' ? Math.round(g0 * Math.pow(g1 / g0, p)) : Math.round(p * 100) / 100);
+    const row = (k, label) =>
+      `<label class="ip-row pe-row"><span class="ip-l mono">${label}</span><span class="pe-track"><input type="range" data-k="${k}" min="0" max="1" step="0.005" value="${toPos(k, s[k])}" aria-label="${label}"><i class="pe-mark" style="left:calc(8px + (100% - 16px) * ${toPos(k, preset[k]).toFixed(4)})" title="${esc(T.label)}"></i></span><span class="ip-v mono" data-v="${k}"></span></label>`;
+    host.innerHTML = `
+      <div class="ap-opts pe-types" role="radiogroup" aria-label="Paper">${PAPER_ORDER.map((k) => `<button type="button" class="mono-btn" role="radio" data-ptype="${k}" aria-checked="${k === s.type}">[ ${PAPER_TYPES[k].label} ]</button>`).join('')}</div>
+      <p class="note pe-note">${esc(T.note)} The marks under the sliders show where this paper really is; every slider goes all the way.</p>
+      ${row('gsm', 'Weight')}
+      ${row('surface', 'Surface')}
+      ${row('sheen', 'Sheen')}
+      ${row('shade', 'Shade')}
+      ${row('age', 'Age')}
+      ${row('wear', 'Wear')}
+      <p class="pe-facts mono dim" data-v="facts"></p>
+      <div class="seg"><button type="button" class="mono-btn dim" data-act="pe-reset">Back to ${esc(T.label)}</button></div>`;
+    const word = (k, v) => {
+      if (k === 'gsm') return `${Math.round(v)} gsm`;
+      if (k === 'surface') return v < 0.1 ? 'Glass' : v < 0.25 ? 'Smooth' : v < 0.45 ? 'Fine' : v < 0.65 ? 'Vellum' : v < 0.85 ? 'Toothy' : 'Rough';
+      if (k === 'sheen') return v < 0.1 ? 'Dry' : v < 0.3 ? 'Matte' : v < 0.5 ? 'Satin' : v < 0.75 ? 'Silk' : 'Gloss';
+      if (k === 'shade') return v < 0.12 ? 'Brilliant' : v < 0.3 ? 'White' : v < 0.6 ? 'Natural' : v < 0.82 ? 'Ivory' : 'Buff';
+      if (k === 'age') return v < 0.05 ? 'New' : v < 0.35 ? 'Years' : v < 0.7 ? 'Decades' : 'A century';
+      return v < 0.05 ? 'Crisp' : v < 0.35 ? 'Read' : v < 0.7 ? 'Well read' : 'Worn';
+    };
+    const sync = () => {
+      for (const k of ['gsm', 'surface', 'sheen', 'shade', 'age', 'wear']) host.querySelector(`[data-v="${k}"]`).textContent = word(k, s[k]);
+      const r = resolvePaper(s);
+      host.querySelector('[data-v="facts"]').textContent = `${describeWeight(r).split(' · ').slice(1).join(' · ')} · a 300-page book ${Math.min(5.6, 0.55 + 300 * 0.0082 * r.calRel).toFixed(1)} cm thick`;
+    };
+    host.querySelectorAll('input[type="range"]').forEach((inp) => {
+      const k = inp.dataset.k;
+      inp.addEventListener('input', () => {
+        s[k] = fromPos(k, parseFloat(inp.value));
+        // snap to the paper's own value when close, so "where it really is" is easy to find again
+        if (Math.abs(parseFloat(inp.value) - toPos(k, preset[k])) < 0.012) s[k] = preset[k];
+        sync();
+        onChange({ ...s }, false);
+      });
+      inp.addEventListener('change', () => onChange({ ...s }, true));
+    });
+    host.querySelectorAll('[data-ptype]').forEach((b) =>
+      b.addEventListener('click', () => {
+        if (b.dataset.ptype === s.type) return;
+        // a new type starts from its own weight, surface, sheen and shade; the book's age and wear stay
+        const next = { type: b.dataset.ptype, age: s.age, wear: s.wear };
+        this.mountPaperEditor(host, next, onChange);
+        onChange(fullSettings(next), true);
+      }),
+    );
+    host.querySelector('[data-act="pe-reset"]').addEventListener('click', () => {
+      const next = { type: s.type };
+      this.mountPaperEditor(host, next, onChange);
+      onChange(fullSettings(next), true);
+    });
+    sync();
+  }
+
   openIndex() {
     const app = this.app;
     const metas = app.sortedMetas();
@@ -939,17 +1069,7 @@ export class UI {
     this.openPanel(
       'index',
       '[ LIBRARY INDEX ]',
-      `<section><span class="k">${metas.length} ${metas.length === 1 ? 'book' : 'books'} on the shelf</span><ul class="list">${items || '<li class="note">Nothing here yet.</li>'}</ul></section>
-       <section><span class="k">[ KEYS ]</span><div class="facts">
-         <span>← →</span><span>Browse / turn pages</span>
-         <span>Enter</span><span>Open book</span>
-         <span>Esc</span><span>Close / back</span>
-         <span>H P E</span><span>Highlighter, pen, eraser</span>
-         <span>B</span><span>Bookmark spread</span>
-         <span>+ − 0</span><span>Zoom</span>
-         <span>M</span><span>Magnifier</span>
-         <span>⌘Z</span><span>Undo mark</span>
-       </div></section>`,
+      `<section><span class="k">${metas.length} ${metas.length === 1 ? 'book' : 'books'} on the shelf</span><ul class="list">${items || '<li class="note">Nothing here yet.</li>'}</ul></section>`,
     );
     this.panelBody.querySelectorAll('button[data-id]').forEach((b) =>
       b.addEventListener('click', () => {
@@ -1046,6 +1166,13 @@ export class UI {
         </div>
       </section>
       <section>
+        <span class="k">[ Paper ]</span>
+        <p class="note" id="pe-own-note">${meta.paper ? 'This book has its own paper.' : `The library's paper (${esc(PAPER_TYPES[fullSettings(app.libraryPaper).type].label)}, set in Settings). Changing it here gives this book its own.`}</p>
+        <div id="pe-book"></div>
+        <div class="seg" id="pe-lib-row"${meta.paper ? '' : ' hidden'}><button type="button" class="mono-btn dim" data-act="paper-lib">Use the library's paper</button></div>
+        ${reading ? '<p class="note">A new weight shows in the book\'s thickness once it is closed.</p>' : ''}
+      </section>
+      <section>
         <span class="k">[ File ]</span>
         <div class="facts">
           <span>Name</span><span style="text-transform:none">${esc(meta.fileName || '—')}</span>
@@ -1137,6 +1264,22 @@ export class UI {
         body.querySelectorAll('[data-spine]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
       }),
     );
+    // paper: the library's, until changed here
+    const peHost = body.querySelector('#pe-book');
+    const peNote = body.querySelector('#pe-own-note');
+    const peLib = body.querySelector('#pe-lib-row');
+    const onPaper = (st, final) => {
+      app.setBookPaper(meta, st, { final });
+      peNote.textContent = 'This book has its own paper.';
+      peLib.hidden = false;
+    };
+    this.mountPaperEditor(peHost, meta.paper || app.libraryPaper, onPaper);
+    body.querySelector('[data-act="paper-lib"]').addEventListener('click', () => {
+      app.setBookPaper(meta, null);
+      this.mountPaperEditor(peHost, app.libraryPaper, onPaper);
+      peNote.textContent = `The library's paper (${PAPER_TYPES[fullSettings(app.libraryPaper).type].label}, set in Settings). Changing it here gives this book its own.`;
+      peLib.hidden = true;
+    });
     const shelfSel = body.querySelector('#f-shelf');
     const newRow = body.querySelector('#f-new-shelf-row');
     shelfSel.addEventListener('change', async () => {

@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { BookModel } from './book3d.js';
 import { Leaf, makePageMaterial, surfaceTable, NX, NY } from './leaf.js';
 import { FLAG, flagsOf, makeFlagMesh, flagMatrix, flagScreenBox, pickBox, layerAt } from './markers.js';
+import { applyPaper } from './paper.js';
 import { InkLayer } from './ink.js';
 import { openPdf, renderPageToCanvas, renderQueue, readOutline } from './pdfdoc.js';
 import { canvasTexture, makePaperCanvas } from './textures.js';
@@ -76,6 +77,7 @@ export class Reader {
     this.hover = { side: 0, amount: 0, v: { v: 0 }, angle: 0, target: 0 };
     this.parallax = { x: 0, y: 0, tx: 0, ty: 0, vx: { v: 0 }, vy: { v: 0 } };
     this.raycaster = new THREE.Raycaster();
+    this.flex = 1; // how supple the open book's paper is (1: book wove)
     this.lastTap = { t: 0, x: 0, y: 0 };
     this.poses = { a: pose(), b: pose(), c: pose(), out: pose(), from: pose() };
   }
@@ -122,9 +124,10 @@ export class Reader {
     this.model.set(Math.PI, 0, 0);
     this.initMarkers();
 
-    app.shared.paper.fill && app.shared.paper.fill();
     // the paper's fibres at the same physical size whatever the page shape (one ≈9 cm map, 1.5 across a page)
     app.shared.paper.repeat.set(1.5, (1.5 * d.Hp) / d.Wp);
+    this.scanSamples = [];
+    this.applyPaper();
     this.placeholder = canvasTexture(makePaperCanvas(d.Wp / d.Hp, 0.3, true), { aniso: app.maxAniso });
     this.blankPaper = canvasTexture(makePaperCanvas(d.Wp / d.Hp, 0.3, false), { aniso: 1 });
     this.fanPaper = [0.11, 0.52, 0.83].map((s) => canvasTexture(makePaperCanvas(d.Wp / d.Hp, s, true), { aniso: 4 }));
@@ -232,6 +235,7 @@ export class Reader {
     this.phase = null;
     app.camera.zoom = 1;
     app.shelf.syncMarkers(this.entry); // its flags as you left them
+    app.shelf.syncPaper(this.entry); // and its page block, a little more read
     app.onReaderClosed && app.onReaderClosed(this.entry);
     this.entry = null;
     app.invalidate();
@@ -576,6 +580,14 @@ export class Reader {
     return flagScreenBox(m.matrixWorld, this.app.camera, this.app.width, this.app.height);
   }
 
+  /** A leaf turned by hand: with "books wear as you read them", it is remembered (see App.noteTurn). */
+  noteTurn(k) {
+    if (!this.app.livingWear) return;
+    this.app.noteTurn(this.meta, k);
+    const leaf = this.leafOf.get(k);
+    if (leaf) leaf.material.userData.u.soil.value = this.soilFor(k);
+  }
+
   // =============================================================== keeping your place
   /** Go somewhere on purpose (a flag, the contents, a page number): where you were reading is kept, to go back to. */
   jumpTo(s) {
@@ -630,6 +642,7 @@ export class Reader {
   // =============================================================== leaves
   acquireLeaf() {
     const leaf = this.pool.pop() || new Leaf(makePageMaterial(this.app.shared.paper));
+    if (this.paperRes) leaf.material.roughness = this.paperRes.roughness;
     leaf.sig = '';
     leaf.curl.amount = 0;
     leaf.bend = 0;
@@ -724,6 +737,72 @@ export class Reader {
     const tf = front <= n ? this.pageTexture(front, fanTex) : this.blankPaper;
     const tb = back <= n ? this.pageTexture(back, fanTex) : this.blankPaper;
     leaf.setPages(tf, tb, front <= n ? this.ink.texture(front) : null, back <= n ? this.ink.texture(back) : null);
+    leaf.material.userData.u.soil.value = this.soilFor(k);
+  }
+
+  // =============================================================== paper
+  /** The book's paper (its own, or the library's) on the leaves; again whenever it changes. */
+  applyPaper() {
+    if (!this.meta) return;
+    const r = this.app.paperFor(this.meta);
+    this.paperRes = r;
+    this.flex = r.flex;
+    this.app.shared.paper.use(r.type); // the type's own fibres, formation and surface
+    applyPaper(this.app.shared.paper.u, this.pool, r, this.d.Wp, this.d.Hp);
+    if (this.entry) this.app.shelf.syncPaper(this.entry, r); // the page block's colour and edges too
+    for (const leaf of this.leafOf.values()) {
+      leaf.material.roughness = r.roughness;
+      leaf.material.userData.u.soil.value = this.soilFor(leaf.k);
+    }
+    this.app.invalidate();
+  }
+
+  /** Finger soil on a leaf: the book's wear, or (when books wear as you read) more on the leaves you turned. */
+  soilFor(k) {
+    const r = this.paperRes;
+    if (!r) return 0;
+    const manual = r.settings.wear;
+    if (!this.app.livingWear) return manual;
+    return this.app.handled(this.meta, k) ? Math.max(manual, 0.25 + 0.75 * this.app.livedWear(this.meta)) : manual;
+  }
+
+  /**
+   * A scan shows its own paper: measure it on the first few pages (the margins' colour, not the ink or a dark
+   * scanner border) so the paper isn't tinted and toned twice. Stored with the book; white pages count too.
+   */
+  sampleScanTone(canvas, n) {
+    if (this.meta.pageTone || n < 3 || !this.scanSamples || this.scanSamples.length >= 3) return;
+    try {
+      const w = 40;
+      const h = Math.max(8, Math.round((w * canvas.height) / canvas.width));
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const x = c.getContext('2d', { willReadFrequently: true });
+      x.drawImage(canvas, 0, 0, w, h);
+      const px = x.getImageData(0, 0, w, h).data;
+      const ring = [];
+      for (let y = 0; y < h; y++)
+        for (let i = 0; i < w; i++) {
+          const fx = i / w;
+          const fy = y / h;
+          const inMargin = (fx > 0.05 && fx < 0.11) || (fx > 0.89 && fx < 0.95) || (fy > 0.04 && fy < 0.08) || (fy > 0.92 && fy < 0.96);
+          if (!inMargin) continue;
+          const o = (y * w + i) * 4;
+          ring.push([px[o], px[o + 1], px[o + 2]]);
+        }
+      ring.sort((a, b) => b[0] + b[1] + b[2] - (a[0] + a[1] + a[2]));
+      const top = ring.slice(0, Math.max(1, Math.floor(ring.length * 0.5)));
+      const avg = [0, 1, 2].map((ch) => top.reduce((sum, p) => sum + p[ch], 0) / top.length);
+      this.scanSamples.push(avg);
+    } catch {
+      return;
+    }
+    if (this.scanSamples.length < 3) return;
+    const m = [0, 1, 2].map((ch) => this.scanSamples.map((p) => p[ch]).sort((a, b) => a - b)[1]);
+    this.meta.pageTone = '#' + m.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+    store.putBook(this.meta).catch(() => {});
+    this.applyPaper();
   }
 
   refreshLeafTexturesFor(page) {
@@ -784,6 +863,7 @@ export class Reader {
       })
       .then((canvas) => {
         if (this.doc !== doc) return;
+        this.sampleScanTone(canvas, n);
         const tex = canvasTexture(canvas, { aniso: this.app.maxAniso });
         tex.onUpdate = () => {
           // the pixels live on the GPU now — free the canvas memory (matters on iPad)
@@ -887,7 +967,7 @@ export class Reader {
       mode: 'auto',
       t: dir > 0 ? 0 : 1,
       start: this.app.clock,
-      dur: TURN_DUR,
+      dur: TURN_DUR * (1 + 0.1 * (this.flex - 1)), // a supple leaf floats down a little longer
       curl: { amount: 0, power: 0.86, span: 32.4, angle: -0.3, pivotU: 0.6, pivotV: 0.5 },
       bend: 0,
       tv: { v: 0 },
@@ -962,8 +1042,8 @@ export class Reader {
         const tau = clamp((time - fl.start) / fl.dur, 0, 1);
         const e = easeInOutSine(tau);
         fl.t = fl.dir > 0 ? e : 1 - e;
-        fl.bend = fl.dir * 0.5 * Math.sin(2 * Math.PI * tau) * (1 - tau * 0.3);
-        fl.curl.amount = 2.0 * Math.pow(Math.sin(Math.PI * Math.min(1, tau * 1.4)), 0.8) * (1 - tau);
+        fl.bend = fl.dir * 0.5 * Math.pow(this.flex, 0.8) * Math.sin(2 * Math.PI * tau) * (1 - tau * 0.3);
+        fl.curl.amount = 2.0 * this.flex * Math.pow(Math.sin(Math.PI * Math.min(1, tau * 1.4)), 0.8) * (1 - tau);
         // order on the stacks: first-flying on top at the start, last-landed on top at the end
         const epsStart = 0.02 + (f.m - fl.i) * 0.004;
         const epsEnd = 0.02 + fl.i * 0.004;
@@ -983,14 +1063,15 @@ export class Reader {
         const e = easeInOutSine(tau);
         fl.t = fl.dir > 0 ? e : 1 - e;
         // the hand lifts the corner first (tip leads), then the leaf falls and the tip trails
-        fl.bend = fl.dir * 0.6 * Math.sin(2 * Math.PI * tau) * (1 - 0.4 * tau);
-        fl.curl.amount = 2.4 * Math.pow(Math.sin(Math.PI * Math.min(1, tau * 1.5)), 0.85) * Math.pow(1 - tau, 0.7);
+        // supple paper (paper.js: flex) lifts with more curl and a tip that trails further
+        fl.bend = fl.dir * 0.6 * Math.pow(this.flex, 0.8) * Math.sin(2 * Math.PI * tau) * (1 - 0.4 * tau);
+        fl.curl.amount = 2.4 * this.flex * Math.pow(Math.sin(Math.PI * Math.min(1, tau * 1.5)), 0.85) * Math.pow(1 - tau, 0.7);
         fl.done = tau >= 1;
         fl.goal = fl.dir > 0 ? 1 : 0;
       } else if (fl.mode === 'drag') {
         fl.t = smoothDamp(fl.t, fl.target, fl.tv, 0.07, dt);
         const reach = smoothstep(0, this.d.Wp * 0.3, fl.dragDist || 0);
-        fl.curl.amount = 6.2 * reach * (0.35 + 0.65 * (1 - Math.abs(2 * fl.t - 1)));
+        fl.curl.amount = 6.2 * Math.pow(this.flex, 0.7) * reach * (0.35 + 0.65 * (1 - Math.abs(2 * fl.t - 1)));
         fl.bend = fl.dir * 0.35 * Math.sin(Math.PI * fl.t);
         fl.done = false;
       } else if (fl.mode === 'settle') {
@@ -1025,6 +1106,7 @@ export class Reader {
         if (fl.dir > 0 && fl.k === this.s) {
           this.s++;
           this.app.lighting.pagesRead += 2; // a page turned by hand (for the candle's report)
+          this.noteTurn(fl.k);
           this.flights.splice(i, 1);
           changed = true;
           again = true;
@@ -1033,6 +1115,7 @@ export class Reader {
         if (fl.dir < 0 && fl.k === this.s - 1) {
           this.s--;
           this.app.lighting.pagesRead += 2;
+          this.noteTurn(fl.k);
           this.flights.splice(i, 1);
           changed = true;
           again = true;

@@ -15,7 +15,8 @@ import { bindingKind, makeBindingMaterial, setBindingArt, setBindingKind } from 
 
 export const SHELF_SCALE = 0.8;
 
-export function bookDims(pages, aspect) {
+/** calRel: the paper's thickness relative to Folio's own book wove (1), see paper.js. */
+export function bookDims(pages, aspect, calRel = 1) {
   aspect = clamp(aspect || 0.7, 0.42, 2.2);
   let Hp = 22.6;
   let Wp = Hp * aspect;
@@ -26,7 +27,7 @@ export function bookDims(pages, aspect) {
   const ov = 0.36; // board overhang beyond the leaves
   const bt = 0.2; // board thickness
   const jb = 0.3; // half the joint gap between boards at the spine
-  const tp = clamp(0.55 + pages * 0.0082, 0.7, 5.6); // text block thickness
+  const tp = clamp(0.55 + pages * 0.0082 * calRel, 0.7, 5.6); // text block thickness
   const leaves = Math.max(1, Math.ceil(pages / 2));
   const Hc = Hp + 2 * ov;
   const Wc = Wp + ov - jb;
@@ -37,6 +38,7 @@ export function bookDims(pages, aspect) {
   return {
     pages,
     aspect,
+    calRel,
     Hp,
     Wp,
     ov,
@@ -420,7 +422,7 @@ export class BookModel {
  * leather, see binding.js) in the book's colour; `tex.spine` is the spine's artwork + stamp texture. The
  * front cover gets its artwork later (shelf.ensureCover) and shows the plain binding until then.
  */
-export function makeBookMaterials(look, tex, shared, d) {
+export function makeBookMaterials(look, tex, shared, d, paper = null) {
   const kind = bindingKind(look);
   const cloth = new THREE.Color(look.cloth);
   const arc = d.T + 0.35;
@@ -436,7 +438,26 @@ export function makeBookMaterials(look, tex, shared, d) {
   edges.polygonOffsetUnits = 4;
   const spine = makeBindingMaterial({ kind, faceW: arc, faceH: d.Hc });
   setBindingArt(spine, tex.spine);
-  return { cover, back, cloth: edges, endpaper: inner, spine, paper: shared.paperMat, edge: shared.edgeMat };
+  const block = paper ? makeBlockMaterials(shared, paper) : { paper: shared.paperMat, edge: shared.edgeMat };
+  return { cover, back, cloth: edges, endpaper: inner, spine, ...block, ownBlock: !!paper };
+}
+
+/**
+ * The page block's own materials for a paper (paper.resolvePaper): its colour, and its edges toned with age,
+ * soiled with use, or gilt.
+ */
+export function makeBlockMaterials(shared, r) {
+  const paper = shared.paperMat.clone();
+  paper.color.copy(r.block);
+  let edge;
+  if (r.edge === 'gilt') {
+    // gilt: mostly its own gold (there is no room for a strong metal to reflect), with a soft sheen
+    edge = new THREE.MeshStandardMaterial({ map: shared.edgeMat.map, color: 0xe0b45a, metalness: 0.35, roughness: 0.42 });
+  } else {
+    edge = shared.edgeMat.clone();
+    edge.color.copy(r.edgeColor);
+  }
+  return { paper, edge };
 }
 
 /** Recolour / change the binding of a material set in place. */

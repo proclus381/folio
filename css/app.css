@@ -1305,3 +1305,45 @@ body[data-mode='reading'] #empty {
     transition-duration: 0.01s !important;
   }
 }
+
+/* paper controls (Settings and a book's details) */
+.pe-types {
+  margin: 2px 0 6px;
+}
+.pe-note {
+  margin: 4px 0 8px;
+}
+.ip-row.pe-row {
+  grid-template-columns: 74px 1fr 78px;
+}
+.pe-row .ip-v {
+  text-align: right;
+  text-transform: uppercase;
+}
+.pe-facts {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  margin: 6px 0 0;
+}
+#pe-lib-row[hidden] {
+  display: none;
+}
+/* a paper slider: the track, and a small mark where the chosen type really is */
+.pe-track {
+  position: relative;
+  display: block;
+}
+.pe-track input[type='range'] {
+  display: block;
+}
+.pe-mark {
+  position: absolute;
+  bottom: 1px;
+  width: 1px;
+  height: 7px;
+  margin-left: -0.5px;
+  background: currentColor;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
