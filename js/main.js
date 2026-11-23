@@ -105,6 +105,8 @@ class App {
     this.cornerPeel = pref('peel', '1') === '1';
     this.freeLeaf = pref('flop', '1') === '1';
     this.catchLeaf = pref('catch', '1') === '1';
+    this.clumpTurns = pref('clump', '1') === '1'; // jumps turn as one block (CLUMP)
+    this.riffle = pref('riffle', '1') === '1'; // the thumb on the fore-edge riffles and gathers (RIFFLE)
     this.dirty = 3;
     this.lastT = performance.now() / 1000;
     this.pending = null;
@@ -502,6 +504,18 @@ class App {
   setFreeLeaf(on) {
     this.freeLeaf = !!on;
     setPref('flop', on ? '1' : '0');
+  }
+
+  /** Settings ▸ Turning: jumps turn as a clump (on) or fan (off). */
+  setClumpTurns(on) {
+    this.clumpTurns = !!on;
+    setPref('clump', on ? '1' : '0');
+  }
+
+  /** Settings ▸ Turning: riffle and gather on the fore-edge, on or off. */
+  setRiffle(on) {
+    this.riffle = !!on;
+    setPref('riffle', on ? '1' : '0');
   }
 
   /** Settings ▸ Turning: catch a leaf in the air, on or off. */

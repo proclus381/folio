@@ -67,10 +67,25 @@ const TIP = {
   release: 0.42, // where a tapped turn's hand lets go
 };
 
-// Catch (Settings ▸ Turning ▸ Catch): a touch on a leaf in the air brakes every leaf in the air to a stop (in about
-// 0.2 s); hold still 0.2 s, or move, and the touched leaf is in your hand. A quick tap lets them fly on and does what
-// a tap does.
-const CATCH = { brake: 0.05, resume: 0.08, hold: 0.2, blend: 0.25 };
+// Catch (Settings ▸ Turning ▸ Catch): a touch held on a leaf in the air brakes every leaf in the air to a stop (in
+// about 0.2 s, starting 60 ms after the touch, so a quick tap or swipe doesn't stall them); hold still 0.2 s, or pull
+// against its turn, and the touched leaf is in your hand. A swipe on with its turn queues the next page, as a swipe
+// anywhere else does; a quick tap lets them fly on and does what a tap does.
+const CATCH = { brake: 0.05, resume: 0.08, delay: 0.06, hold: 0.2, blend: 0.25 };
+
+// Several leaves at once (Settings ▸ Turning ▸ Several leaves: Clump). A jump of more than three leaves turns as one
+// block instead of a fan: its leaves are bound at the spine and fan only a little at the fore-edge (twice the block's
+// own thickness, at least 6 mm, so it reads as a block), the top leaf (the one it was lifted by) curls on its own and the rest stay stiff together. The
+// turn takes 0.7 s + 45 ms · log2(leaves), at most 1.1 s (stripe.press's gather).
+const CLUMP = { layers: 8, spread: 2.0, minSpread: 0.6, maxSpread: 2.6 };
+const clumpDur = (n) => Math.min(1.1, 0.7 + 0.045 * Math.log2(Math.max(1, n)));
+
+// The thumb on the fore-edge (Settings ▸ Turning ▸ Riffle and gather). Pressed near a page's outer edge:
+//  - slide along the edge at once: a riffle, leaves flick over one after another (one per 16 px of slide),
+//    the faster the slide the more in the air (up to eight), as through a flipbook;
+//  - hold a moment (0.35 s), then slide down: gather, each 14 px takes one more leaf into a block lifted under the
+//    thumb; then turn the block toward the spine with the finger, and let go: it lands, or falls back.
+const RIFFLE = { step: 16, dur: 0.55, max: 8, arm: 0.35, gather: 14 };
 
 /** The fold's tilt for a grab at height gv (−½ bottom … ½ top). */
 function grabTilt(gv) {
@@ -848,7 +863,7 @@ export class Reader {
     const N = this.d.leaves;
     if (this.fan) {
       const f = this.fan;
-      const pr = smoothstep(0.15, 0.9, clamp((time - f.start) / f.total, 0, 1));
+      const pr = smoothstep(0.15, 0.9, f.clump ? f.tc : clamp((time - f.start) / f.total, 0, 1));
       return lerp(f.s0, f.s1, pr);
     }
     let c = this.s;
@@ -1141,12 +1156,12 @@ export class Reader {
     return f.mode === 'auto' || (f.mode === 'settle' && (f.dir > 0 ? f.goal === 1 : f.goal === 0));
   }
 
-  next() {
+  next(max = 4) {
     if (!this.canTurn()) return false;
     if (this.flights.some((f) => f.dir < 0 || !this.flightCompletes(f))) return false;
     const fwd = this.flights.length;
     const k = this.s + fwd;
-    if (k >= this.d.leaves || fwd >= 4) {
+    if (k >= this.d.leaves || fwd >= max) {
       if (k >= this.d.leaves) this.app.ui.nudge('end');
       return false;
     }
@@ -1157,12 +1172,12 @@ export class Reader {
     return true;
   }
 
-  prev() {
+  prev(max = 4) {
     if (!this.canTurn()) return false;
     if (this.flights.some((f) => f.dir > 0 || !this.flightCompletes(f))) return false;
     const back = this.flights.length;
     const k = this.s - 1 - back;
-    if (k < 0 || back >= 4) {
+    if (k < 0 || back >= max) {
       if (k < 0) this.app.ui.nudge('start');
       return false;
     }
@@ -1187,6 +1202,184 @@ export class Reader {
     };
   }
 
+  /**
+   * A block of leaves from here to s1 (CLUMP). mode 'auto' turns it (a jump); 'drag' follows a thumb (gather), keeping
+   * the angle it has. `angle`: the top leaf's fold, from where it was taken.
+   */
+  startClump(s1, time, mode = 'auto', angle = -0.25) {
+    const s0 = this.s;
+    const count = Math.abs(s1 - s0);
+    const dir = Math.sign(s1 - s0);
+    if (!count) return;
+    const prev = this.fan && this.fan.clump ? this.fan : null;
+    const m = Math.min(count, CLUMP.layers);
+    const ks = new Set();
+    for (let i = 0; i < m; i++) {
+      const j = m > 1 ? Math.round((i * (count - 1)) / (m - 1)) : 0;
+      ks.add(dir > 0 ? s0 + j : s0 - 1 - j);
+    }
+    // a flagged leaf in the block goes with it, so its flag does
+    const lo = Math.min(s0, s1);
+    const hi = Math.max(s0, s1);
+    let extra = 0;
+    for (const f of this.flags || []) if (f.k >= lo && f.k < hi && !ks.has(f.k) && extra < 6 && ++extra) ks.add(f.k);
+    const order = [...ks].sort((a, b) => (dir > 0 ? a - b : b - a));
+    const n = order.length;
+    // bound at the spine, the block fans at its fore-edge by about its own thickness
+    const thick = (count * this.d.tp) / this.d.leaves;
+    const spread = clamp(thick * CLUMP.spread, CLUMP.minSpread, CLUMP.maxSpread);
+    const delta = n > 1 ? spread / (Math.PI * this.d.Wp * (n - 1)) : 0;
+    const leaves = order.map((k, i) => ({
+      k,
+      dir,
+      i,
+      t: dir > 0 ? 0 : 1,
+      eps: 0.02,
+      curl: { amount: 0, power: 0.86, span: 32.4, angle, pivotU: 0.6, pivotV: 0.5, cone: 0 },
+      bend: 0,
+      fanTex: i === 0 || i === n - 1 ? null : this.fanPaper[i % this.fanPaper.length],
+    }));
+    this.fan = {
+      clump: true,
+      s0,
+      s1,
+      dir,
+      count,
+      start: time,
+      total: clumpDur(count),
+      leaves,
+      m: n,
+      delta,
+      mode,
+      tc: prev ? prev.tc : 0,
+      tv: prev ? prev.tv : { v: 0 },
+      target: prev ? prev.target : 0,
+      goal: 1,
+    };
+    if (mode === 'auto') this.app.lighting.gust(dir, 1.15);
+    this.prefetchSpread(s1, 0);
+    this.app.invalidate();
+  }
+
+  updateClump(f, dt, time) {
+    let done = false;
+    if (f.mode === 'auto') {
+      const tau = clamp((time - f.start) / f.total, 0, 1);
+      f.tc = easeInOutSine(tau);
+      done = tau >= 1;
+    } else if (f.mode === 'drag') {
+      f.tc = smoothDamp(f.tc, f.target, f.tv, 0.08, dt);
+    } else {
+      f.tc = smoothDamp(f.tc, f.goal, f.tv, 0.16, dt);
+      done = Math.abs(f.tc - f.goal) < 0.002;
+      if (done) f.tc = f.goal;
+    }
+    const flex = this.flex;
+    const stiff = 1 / (1 + f.count / 24); // a thicker block bends less
+    const swing = Math.pow(Math.sin(Math.PI * f.tc), 0.8);
+    const k = 1 + f.delta * (f.m - 1);
+    for (const fl of f.leaves) {
+      // the top leaf leads by a hair: the block is bound at the spine and fans a little at the fore-edge
+      const ti = clamp(f.tc * k - f.delta * fl.i, 0, 1);
+      fl.t = f.dir > 0 ? ti : 1 - ti;
+      const top = fl.i === 0;
+      fl.bend = f.dir * 0.4 * stiff * Math.pow(flex, 0.8) * Math.sin(2 * Math.PI * f.tc);
+      // the leaf it was lifted by curls on its own; the rest hold together
+      fl.curl.amount = (top ? (f.mode === 'drag' ? 4.2 : 2.6) * Math.pow(flex, 0.7) : 0.5 * stiff * flex) * swing;
+      fl.eps = lerp(0.02 + (f.m - fl.i) * 0.004, 0.02 + fl.i * 0.004, ti);
+    }
+    if (done) {
+      const turned = f.goal === 1;
+      this.s = turned ? f.s1 : f.s0;
+      this.fan = null;
+      if (turned) this.app.lighting.pagesRead += 2 * f.count;
+      this.onSpreadChanged();
+    }
+  }
+
+  /** The thumb slid along the edge at once: the leaf under it flicks over first, then one per RIFFLE.step px. */
+  startRiffle(g, fl, p) {
+    const t0 = fl.dir > 0 ? fl.t : 1 - fl.t;
+    fl.mode = 'auto';
+    fl.dur = RIFFLE.dur;
+    fl.start = this.app.clock - (fl.dur * Math.acos(clamp(1 - 2 * t0, -1, 1))) / Math.PI;
+    fl.from = { ...fl.curl };
+    fl.goal = fl.dir > 0 ? 1 : 0;
+    delete fl.peel;
+    g.mode = 'riffle';
+    g.dir = fl.dir;
+    g.lastY = p.y;
+    g.acc = 0;
+    this.app.invalidate();
+  }
+
+  riffleMove(g, x, y) {
+    g.acc += Math.abs(y - g.lastY);
+    g.lastY = y;
+    const bp = this.bookPoint(x, y);
+    const angle = bp ? clamp(grabTilt(bp.y / this.d.Hp) * 1.2, -0.6, 0.6) : -0.25;
+    while (g.acc >= RIFFLE.step) {
+      g.acc -= RIFFLE.step;
+      const ok = g.dir > 0 ? this.next(RIFFLE.max) : this.prev(RIFFLE.max);
+      if (!ok) {
+        g.acc = 0;
+        break;
+      }
+      const fl = this.flights[this.flights.length - 1];
+      fl.dur = RIFFLE.dur;
+      fl.curl.angle = angle; // it slips out from under the thumb, so it leaves by that corner
+    }
+  }
+
+  /** Held, then slid down the edge: the leaf under the thumb and those below it lift as a block. */
+  startGather(g, fl, p) {
+    this.flights.splice(this.flights.indexOf(fl), 1);
+    g.mode = 'gather';
+    g.dir = fl.dir;
+    g.y0 = p.y;
+    g.n = 0;
+    g.angle = fl.curl.angle;
+    g.tc0 = fl.dir > 0 ? fl.t : 1 - fl.t;
+    g.xpx = p.x;
+    this.gatherMove(g, p.x, p.y);
+    const f = this.fan;
+    if (f) {
+      f.tc = g.tc0;
+      // the finger now holds the block where it is
+      const bp = this.bookPoint(p.x, p.y);
+      const R = this.d.Wp * 0.98;
+      g.offset = bp ? R * Math.cos(Math.PI * (g.dir > 0 ? f.tc : 1 - f.tc)) - bp.x : 0;
+      g.x0 = bp ? bp.x : 0;
+    }
+  }
+
+  gatherMove(g, x, y) {
+    const f = this.fan && this.fan.clump ? this.fan : null;
+    // more leaves while the thumb slides along the edge (down for more, back up for fewer); once it moves toward
+    // the spine, the block is what it is
+    if (!g.frozen && Math.abs(x - g.xpx) > 12) g.frozen = true;
+    if (!f || !g.frozen) {
+      const room = g.dir > 0 ? this.d.leaves - this.s : this.s;
+      const n = clamp(1 + Math.floor(Math.max(0, y - g.y0) / RIFFLE.gather), 1, room);
+      if (n !== g.n) {
+        g.n = n;
+        this.startClump(this.s + g.dir * n, this.app.clock, 'drag', g.angle);
+      }
+    }
+    const c = this.fan;
+    if (!c || !c.clump) return;
+    const lift = Math.min(0.1, 0.03 + 0.008 * c.m); // the gathered block stands a little off the stack, to be seen
+    const bp = g.offset != null ? this.bookPoint(x, y) : null;
+    let t = lift;
+    if (bp) {
+      const xp = bp.x + g.offset;
+      const a = Math.acos(clamp(xp / (this.d.Wp * 0.98), -1, 1)) / Math.PI;
+      t = Math.max(lift, g.dir > 0 ? a : 1 - a);
+    }
+    c.target = t;
+    this.app.invalidate();
+  }
+
   goToPage(page) {
     if (!this.active) return;
     this.jumpTo(clamp(Math.floor(page / 2), 0, this.d.leaves));
@@ -1209,6 +1402,10 @@ export class Reader {
     const s0 = this.s;
     if (s1 === s0) return;
     const count = Math.abs(s1 - s0);
+    if (!opening && count > 3 && this.app.clumpTurns) {
+      this.startClump(s1, time, 'auto');
+      return;
+    }
     const dir = Math.sign(s1 - s0);
     const m0 = Math.min(count, opening ? 10 : 9);
     // the leaves that fly: spread evenly, plus the flagged leaves on the way, so their flags fly with them
@@ -1248,6 +1445,10 @@ export class Reader {
   updateFlights(dt, time) {
     let busy = false;
     const now = time;
+    if (this.fan && this.fan.clump) {
+      this.updateClump(this.fan, dt, time);
+      return true;
+    }
     if (this.fan) {
       busy = true;
       const f = this.fan;
@@ -1270,7 +1471,18 @@ export class Reader {
       return busy;
     }
     const g = this.gesture;
-    if (g && g.mode === 'catch' && this.app.clock - g.clock0 >= CATCH.hold) this.grabCaught(g);
+    if (g && g.mode === 'turn' && g.direct && !g.decided && !g.armed && this.app.riffle && this.app.clock - g.clock0 >= RIFFLE.arm) {
+      const p = [...this.pointers.values()][0];
+      if (p && Math.hypot(p.x - p.x0, p.y - p.y0) < 8) g.armed = true; // held still: a slide down now gathers
+    }
+    if (g && g.mode === 'catch') {
+      const held = this.app.clock - g.clock0;
+      if (!g.braked && held >= CATCH.delay) {
+        this.brakeAll(true);
+        g.braked = true;
+      }
+      if (held >= CATCH.hold) this.grabCaught(g);
+    }
     const physical = this.app.freeLeaf;
     for (const fl of this.flights) {
       busy = true;
@@ -1665,9 +1877,8 @@ export class Reader {
     if (this.app.catchLeaf && this.flights.length && !zoomed && !this.fan) {
       const fl = this.hitFlight(e.clientX, e.clientY);
       if (fl) {
-        // a leaf in the air under your finger: everything in the air brakes
-        this.brakeAll(true);
-        this.gesture = { mode: 'catch', fl, id: e.pointerId, clock0: this.app.clock };
+        // a leaf in the air under your finger: held, everything in the air brakes (updateFlights)
+        this.gesture = { mode: 'catch', fl, id: e.pointerId, clock0: this.app.clock, braked: false };
         this.app.invalidate();
         return;
       }
@@ -1677,7 +1888,7 @@ export class Reader {
       // grabbed near the fore-edge: lift the leaf right away
       const dir = hit.front ? +1 : -1;
       if (this.startDrag(dir, e.clientX, e.clientY)) {
-        this.gesture = { mode: 'turn' };
+        this.gesture = { mode: 'turn', direct: true, clock0: this.app.clock, decided: false };
         return;
       }
     }
@@ -1739,7 +1950,41 @@ export class Reader {
       return;
     }
     if (!g) return;
-    if (g.mode === 'catch' && Math.hypot(e.clientX - p.x0, e.clientY - p.y0) > 8) this.grabCaught(g);
+    if (g.mode === 'catch' && Math.hypot(e.clientX - p.x0, e.clientY - p.y0) > 8) {
+      // a swipe on with the leaf's own turn queues the next one; pulled any other way, the leaf is caught
+      const sx = e.clientX - p.x0;
+      const sy = e.clientY - p.y0;
+      const dir = sx < 0 ? +1 : -1;
+      if (Math.abs(sx) > Math.abs(sy) * 0.8 && dir === g.fl.dir && this.flightCompletes(g.fl)) {
+        this.brakeAll(false);
+        g.mode = (dir > 0 ? this.next() : this.prev()) ? 'queued' : 'none';
+        this.app.invalidate();
+        return;
+      }
+      this.grabCaught(g);
+    }
+    if (g.mode === 'turn' && g.direct && !g.decided && this.app.riffle) {
+      const dx = e.clientX - p.x0;
+      const dy = e.clientY - p.y0;
+      if (Math.hypot(dx, dy) > 14) {
+        g.decided = true;
+        const fl = this.flights.find((f) => f.mode === 'drag');
+        const lifted = fl ? (fl.dir > 0 ? fl.t : 1 - fl.t) : 1;
+        if (fl && Math.abs(dy) > 2.2 * Math.abs(dx) && lifted < 0.08) {
+          if (g.armed && dy > 0) this.startGather(g, fl, p);
+          else this.startRiffle(g, fl, p);
+          return;
+        }
+      }
+    }
+    if (g.mode === 'riffle') {
+      this.riffleMove(g, e.clientX, e.clientY);
+      return;
+    }
+    if (g.mode === 'gather') {
+      this.gatherMove(g, e.clientX, e.clientY);
+      return;
+    }
     if (g.mode === 'turn') {
       this.updateDrag(e.clientX, e.clientY);
       return;
@@ -1794,6 +2039,24 @@ export class Reader {
       this.brakeAll(false);
       this.gesture = null;
       if (e.type !== 'pointercancel' && (e.timeStamp || performance.now()) - p.t0 < this.app.tapMs) this.tap(p.x0, p.y0, p.type);
+      this.app.invalidate();
+      return;
+    }
+    if (g && g.mode === 'riffle') {
+      this.gesture = null;
+      return;
+    }
+    if (g && g.mode === 'gather') {
+      // let go: the block lands if it's past halfway or flicked on, else it falls back
+      const f = this.fan && this.fan.clump ? this.fan : null;
+      if (f) {
+        const flick = -p.vx * g.dir;
+        f.mode = 'settle';
+        f.goal = e.type !== 'pointercancel' && ((f.tc > 0.42 && flick > -450) || flick > 450) ? 1 : 0;
+        f.tv.v += clamp(flick / 2500, -1.5, 1.5) * (f.goal ? 1 : 0);
+        if (f.goal) this.app.lighting.gust(g.dir, 1.1);
+      }
+      this.gesture = null;
       this.app.invalidate();
       return;
     }
