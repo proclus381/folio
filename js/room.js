@@ -5,6 +5,11 @@
 //   brightness stored as 1 − exp(−L / 2), so the window and the lamp keep their punch in 8 bits.
 // Glossy surfaces look it up with `folioRoomEnv(direction in world space, roughness)`. Until it has loaded
 // (or if it can't), a drawn stand-in answers: a bright ceiling, a darker floor, a window up to the left.
+//
+// Each reading light has its own room (tools/blender/room_lights.py → assets/room/room-<light>.png, packed the
+// same way): the room at night with that lamp, candle or fire lit where the app puts it, or by sun or rain. It is
+// scaled to the mood's own brightness, so the lighting manager blends the day room (dimmed, as before) into it as
+// the light comes on (`setRoomLight`), mirrored when the light stands on its other side.
 
 import * as THREE from 'three';
 
@@ -12,6 +17,9 @@ export const roomUniforms = {
   roomMap: { value: null },
   roomReady: { value: 0 },
   roomLevel: { value: 1 }, // the room's own light (a candle-lit evening dims it)
+  roomMap2: { value: null }, // the active reading light's room
+  roomMix: { value: 0 }, // how far it has come on
+  roomFlip: { value: 1 }, // −1: the light stands on the other side from where it was rendered
 };
 
 /** GLSL: put after <common>; needs the uniforms above. */
@@ -19,6 +27,9 @@ export const ROOM_GLSL = `
 uniform sampler2D roomMap;
 uniform float roomReady;
 uniform float roomLevel;
+uniform sampler2D roomMap2;
+uniform float roomMix;
+uniform float roomFlip;
 vec3 folioRoomDrawn(vec3 r, float rough) {
   vec3 c = mix(vec3(0.2, 0.19, 0.18), vec3(1.1, 1.08, 1.05), smoothstep(-0.5, 0.6, r.y));
   c += vec3(0.55, 0.53, 0.5) * pow(max(0.0, dot(r, normalize(vec3(-0.45, 0.55, 0.7)))), 8.0) * (1.0 - rough);
@@ -30,6 +41,11 @@ vec3 folioRoomLevel(vec2 uv, float level) {
   vec3 c = texture2D(roomMap, vec2(uv.x, 1.0 - (level + y) / 5.0)).rgb;
   return -2.0 * log(max(vec3(1.0 / 255.0), 1.0 - c));
 }
+vec3 folioRoomLevel2(vec2 uv, float level) {
+  float y = clamp(uv.y, 0.5 / 128.0, 1.0 - 0.5 / 128.0);
+  vec3 c = texture2D(roomMap2, vec2(uv.x, 1.0 - (level + y) / 5.0)).rgb;
+  return -2.0 * log(max(vec3(1.0 / 255.0), 1.0 - c));
+}
 // r: a world-space direction; rough: the surface's roughness
 vec3 folioRoomEnv(vec3 r, float rough) {
   if (roomReady < 0.5) return folioRoomDrawn(r, rough) * roomLevel;
@@ -38,7 +54,12 @@ vec3 folioRoomEnv(vec3 r, float rough) {
   float lv = clamp((rough - 0.2) / 0.7 * 4.0, 0.0, 4.0);
   float l0 = floor(lv);
   float l1 = min(4.0, l0 + 1.0);
-  return mix(folioRoomLevel(uv, l0), folioRoomLevel(uv, l1), lv - l0) * roomLevel;
+  vec3 c = mix(folioRoomLevel(uv, l0), folioRoomLevel(uv, l1), lv - l0) * roomLevel;
+  if (roomMix > 0.001) {
+    vec2 uv2 = vec2(atan(d.x * roomFlip, d.z) / 6.2831853 + 0.5, uv.y);
+    c = mix(c, mix(folioRoomLevel2(uv2, l0), folioRoomLevel2(uv2, l1), lv - l0), roomMix);
+  }
+  return c;
 }
 `;
 
@@ -59,21 +80,55 @@ export function loadRoom(url = 'assets/room/room.png') {
   img
     .decode()
     .then(() => {
-      const t = new THREE.Texture(img);
-      t.colorSpace = THREE.NoColorSpace;
-      t.wrapS = THREE.RepeatWrapping;
-      t.wrapT = THREE.ClampToEdgeWrapping;
-      t.minFilter = THREE.LinearFilter; // (the levels are its own mipmaps)
-      t.magFilter = THREE.LinearFilter;
-      t.generateMipmaps = false;
-      t.needsUpdate = true;
-      roomUniforms.roomMap.value = t;
+      roomUniforms.roomMap.value = roomTexture(img);
       roomUniforms.roomReady.value = 1;
       for (const fn of listeners) fn();
     })
     .catch(() => {
       /* the drawn room stays */
     });
+}
+
+function roomTexture(img) {
+  const t = new THREE.Texture(img);
+  t.colorSpace = THREE.NoColorSpace;
+  t.wrapS = THREE.RepeatWrapping;
+  t.wrapT = THREE.ClampToEdgeWrapping;
+  t.minFilter = THREE.LinearFilter; // (the levels are its own mipmaps)
+  t.magFilter = THREE.LinearFilter;
+  t.generateMipmaps = false;
+  t.needsUpdate = true;
+  return t;
+}
+
+const lightRooms = new Map(); // light id → texture, or 'loading' / 'failed'
+let lightRoom = null;
+/**
+ * The active reading light's room: `id` (oil, candle, desk, fire, sun, rain, or null), how far it has come on
+ * (0…1) and `flip` (−1 when it stands on the other side). Called every frame by the lighting manager; loads a
+ * light's room the first time it is wanted and blends it in once it has arrived.
+ */
+export function setRoomLight(id, mix, flip = 1) {
+  const u = roomUniforms;
+  if (id && !lightRooms.has(id)) {
+    lightRooms.set(id, 'loading');
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = `assets/room/room-${id}.png`;
+    img
+      .decode()
+      .then(() => {
+        lightRooms.set(id, roomTexture(img));
+        for (const fn of listeners) fn();
+      })
+      .catch(() => lightRooms.set(id, 'failed'));
+  }
+  const t = id ? lightRooms.get(id) : null;
+  if (t && typeof t === 'object') {
+    if (lightRoom !== t) u.roomMap2.value = lightRoom = t;
+    u.roomMix.value = mix;
+    u.roomFlip.value = flip;
+  } else u.roomMix.value = 0;
 }
 
 /**

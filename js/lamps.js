@@ -11,8 +11,28 @@ import * as THREE from 'three';
 import { clamp, lerp, smoothstep } from './anim.js';
 import { LightSource, kelvinColor, noise1 } from './lighting.js';
 import { BILLBOARD_VERT, FLAME_FRAG, GLOW_FRAG, SMOKE_VERT, SMOKE_FRAG, OVER, ADDITIVE } from './candle.js';
+import { reflectRoom } from './room.js';
 
-const lathe = (pts, seg = 48) => new THREE.LatheGeometry(pts.map(([x, y]) => new THREE.Vector2(x, y)), seg);
+const lathe = (pts, seg = 96) => new THREE.LatheGeometry(pts.map(([x, y]) => new THREE.Vector2(x, y)), seg);
+
+/**
+ * Turned work with a pattern round it: each vertex's radius × (1 + amp · wave(n·angle) · band(height)), where band
+ * fades the pattern in and out between y0 and y1. Flutes of pressed glass, the knurling of a brass collar.
+ */
+export function pattern(geo, n, amp, y0, y1, wave = Math.cos) {
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i);
+    const y = p.getY(i);
+    const z = p.getZ(i);
+    const b = smoothstep(y0, y0 + (y1 - y0) * 0.25, y) * (1 - smoothstep(y1 - (y1 - y0) * 0.25, y1, y));
+    if (b <= 0) continue;
+    const k = 1 + amp * b * wave(n * Math.atan2(z, x));
+    p.setXYZ(i, x * k, y, z * k);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
 
 /** A thin thread of smoke (for a flame put out). */
 class Smoke {
@@ -60,7 +80,9 @@ class Smoke {
   }
 }
 
-const brass = (opacity = 1) => new THREE.MeshStandardMaterial({ color: 0xb48a42, metalness: 0.55, roughness: 0.34, transparent: true, opacity });
+// polished brass: a metal, so what it shows is the room it reflects (room.js: the room of the light that's on)
+export const brass = (opacity = 1, key = 'brass') =>
+  reflectRoom(new THREE.MeshStandardMaterial({ color: 0xd2ab62, metalness: 1, roughness: 0.3, transparent: true, opacity }), 1, key);
 
 /** Clear glass: nearly invisible face-on, showing at its edges (Fresnel) where it reflects the room. */
 function glass(color, rim = 1) {
@@ -77,7 +99,8 @@ function glass(color, rim = 1) {
     );
   };
   m.customProgramCacheKey = () => `folio-glass-${rim}`;
-  return m;
+  // and it reflects the room (the dark room and the window or lamp in it), most at its edges
+  return reflectRoom(m, 0.8, 'glass-' + rim);
 }
 
 // =============================================================== oil lamp
@@ -92,14 +115,35 @@ const FONT = [
   [1.85, 4.3],
   [1.05, 4.62],
 ];
-function fontRadiusAt(y) {
-  for (let i = 1; i < FONT.length; i++) {
-    if (y <= FONT[i][1]) {
-      const t = (y - FONT[i - 1][1]) / (FONT[i][1] - FONT[i - 1][1]);
-      return lerp(FONT[i - 1][0], FONT[i][0], clamp(t, 0, 1));
+/** A profile through its points, smooth (centripetal-ish Catmull-Rom, `n` steps a segment): turned glass has no corners. */
+function smooth(pts, n = 8) {
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    for (let k = 0; k < n; k++) {
+      const t = k / n;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      const f = (a, b, c, d) => 0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+      out.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]);
     }
   }
-  return FONT[FONT.length - 1][0];
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+const FONT_S = smooth(FONT, 10);
+
+function fontRadiusAt(y) {
+  for (let i = 1; i < FONT_S.length; i++) {
+    if (y <= FONT_S[i][1]) {
+      const t = (y - FONT_S[i - 1][1]) / (FONT_S[i][1] - FONT_S[i - 1][1] || 1);
+      return lerp(FONT_S[i - 1][0], FONT_S[i][0], clamp(t, 0, 1));
+    }
+  }
+  return FONT_S[FONT_S.length - 1][0];
 }
 
 export class OilLamp extends LightSource {
@@ -129,13 +173,15 @@ export class OilLamp extends LightSource {
     g.add(foot);
     // glass font with the oil in it
     this.glassMat = glass(0xe8f0ec, 0.8);
-    const font = new THREE.Mesh(lathe([[0, FONT[0][1]], ...FONT, [0, FONT[FONT.length - 1][1]]]), this.glassMat);
+    // pressed glass: sixteen soft flutes round the belly of the font
+    const font = new THREE.Mesh(pattern(lathe([[0, FONT[0][1]], ...FONT_S, [0, FONT[FONT.length - 1][1]]], 128), 16, 0.035, 1.3, 4.35), this.glassMat);
     font.renderOrder = 6;
     g.add(font);
-    this.oilMat = new THREE.MeshStandardMaterial({ color: 0xa8600f, roughness: 0.2, transparent: true, opacity: 0, emissive: new THREE.Color(0xff7a18), emissiveIntensity: 0, depthWrite: false });
+    // lamp oil: pale amber, lit from above through the glass
+    this.oilMat = new THREE.MeshStandardMaterial({ color: 0xc99a48, roughness: 0.15, transparent: true, opacity: 0, emissive: new THREE.Color(0xffa040), emissiveIntensity: 0, depthWrite: false });
     this.oilClip = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
     this.oilMat.clippingPlanes = [this.oilClip];
-    const oil = new THREE.Mesh(lathe([[0, FONT[0][1] + 0.05], ...FONT.map(([r, y]) => [r * 0.93, y]), [0, 4.55]]), this.oilMat);
+    const oil = new THREE.Mesh(lathe([[0, FONT[0][1] + 0.05], ...FONT_S.map(([r, y]) => [r * 0.93, y]), [0, 4.55]]), this.oilMat);
     oil.renderOrder = 5;
     g.add(oil);
     this.oilTop = new THREE.Mesh(new THREE.CircleGeometry(1, 40), this.oilMat);
@@ -143,12 +189,26 @@ export class OilLamp extends LightSource {
     this.oilTop.renderOrder = 5;
     g.add(this.oilTop);
     // collar, burner and its gallery
-    const collar = new THREE.Mesh(lathe([[1.05, 4.6], [1.1, 4.7], [1.1, 5.05], [1.35, 5.1], [1.42, 5.75], [1.2, 5.8], [0, 5.8]]), this.brassMat);
+    // the collar, and the burner screwed into it with a knurled band to grip
+    const collar = new THREE.Mesh(
+      pattern(lathe([[1.05, 4.6], [1.1, 4.7], [1.1, 5.05], [1.35, 5.1], [1.4, 5.16], [1.4, 5.6], [1.42, 5.75], [1.2, 5.8], [0, 5.8]], 192), 72, 0.018, 5.14, 5.62),
+      this.brassMat,
+    );
     collar.castShadow = true;
     g.add(collar);
+    // the wick-raiser: a spindle out of the burner's side with a knurled thumbwheel
+    const spindle = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 1.0, 16), this.brassMat);
+    spindle.rotation.z = Math.PI / 2;
+    spindle.position.set(1.75, 5.42, 0.6);
+    g.add(spindle);
+    const wheel = new THREE.Mesh(pattern(new THREE.CylinderGeometry(0.42, 0.42, 0.1, 48), 24, 0.04, -1, 1), this.brassMat);
+    wheel.rotation.z = Math.PI / 2;
+    wheel.position.set(2.22, 5.42, 0.6);
+    wheel.castShadow = true;
+    g.add(wheel);
     // chimney
     this.chimMat = glass(0xffffff, 1);
-    const chim = new THREE.Mesh(lathe([[1.18, 5.72], [1.22, 6.25], [1.72, 7.15], [1.86, 8.0], [1.55, 9.0], [1.02, 9.9], [0.97, 12.4], [1.04, 12.5]], 40), this.chimMat);
+    const chim = new THREE.Mesh(lathe([...smooth([[1.18, 5.72], [1.22, 6.25], [1.72, 7.15], [1.86, 8.0], [1.55, 9.0], [1.02, 9.9], [0.97, 12.2]], 8), [0.97, 12.4], [1.04, 12.5]], 96), this.chimMat);
     chim.renderOrder = 7;
     g.add(chim);
     // flat wick + flame + the glow it puts in the glass

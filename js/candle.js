@@ -9,6 +9,7 @@
 import * as THREE from 'three';
 import { clamp, lerp, smoothstep } from './anim.js';
 import { kelvinColor } from './lighting.js';
+import { reflectRoom } from './room.js';
 
 const R = 1.45; // pillar radius (world units, before scale)
 const H_FULL = 7.4;
@@ -183,20 +184,39 @@ export class Candle {
 
   build() {
     const fade = { transparent: true, opacity: 0 };
-    // dish
+    // a brass chamberstick: a wide dish with a rolled rim, a socket the candle stands in, a ring to carry it by
+    // (brass is a metal: what it shows is the room it reflects, room.js)
+    const S = R + 0.12; // the socket's inner radius
     const dishPts = [
       [0, 0],
-      [2.05, 0],
-      [2.32, 0.07],
-      [2.42, 0.28],
-      [2.36, 0.36],
-      [2.08, 0.2],
+      [2.3, 0],
+      [2.6, 0.05],
+      [2.8, 0.2],
+      [2.86, 0.36],
+      [2.8, 0.47],
+      [2.68, 0.44],
+      [2.5, 0.27],
+      [2.1, 0.19],
+      [S + 0.1, 0.18],
+      [S + 0.06, 0.26],
+      [S + 0.04, 0.92],
+      [S + 0.13, 1.0],
+      [S + 0.1, 1.08],
+      [S, 1.06],
+      [S - 0.02, 0.25],
       [0, 0.17],
     ].map(([x, y]) => new THREE.Vector2(x, y));
-    this.dishMat = new THREE.MeshStandardMaterial({ color: 0xc9c2b6, roughness: 0.5, ...fade });
-    const dish = new THREE.Mesh(new THREE.LatheGeometry(dishPts, 48), this.dishMat);
+    this.dishMat = reflectRoom(new THREE.MeshStandardMaterial({ color: 0xd2ab62, metalness: 1, roughness: 0.32, ...fade }), 1, 'brass-candle');
+    const dish = new THREE.Mesh(new THREE.LatheGeometry(dishPts, 96), this.dishMat);
     dish.castShadow = dish.receiveShadow = true;
     this.inner.add(dish);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.1, 12, 40), this.dishMat);
+    ring.position.set(3.3, 0.3, 0);
+    ring.castShadow = true;
+    this.inner.add(ring);
+    const tab = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.07, 0.42), this.dishMat);
+    tab.position.set(2.95, 0.42, 0);
+    this.inner.add(tab);
 
     // wax pillar (unit height, scaled), glowing from inside near the top
     this.glowU = { uGlow: { value: 0 }, uGlowColor: { value: GLOW_COLOR.clone() }, uHeight: { value: H_FULL } };
@@ -232,7 +252,16 @@ totalEmissiveRadiance += uGlowColor * uGlow * (exp(-waxDepth / 0.55) * 1.2 + exp
 
     // soft rim and the molten pool inside it
     this.rimMat = new THREE.MeshStandardMaterial({ color: 0xf3ead8, roughness: 0.45, emissive: GLOW_COLOR.clone(), emissiveIntensity: 0, ...fade });
-    this.rim = new THREE.Mesh(new THREE.TorusGeometry(R - 0.13, 0.13, 10, 56), this.rimMat);
+    // (not quite round: wax melts back unevenly)
+    const rimGeo = new THREE.TorusGeometry(R - 0.13, 0.13, 10, 96);
+    const rp = rimGeo.attributes.position;
+    for (let i = 0; i < rp.count; i++) {
+      const a = Math.atan2(rp.getY(i), rp.getX(i));
+      const k = 1 + 0.025 * Math.sin(3 * a + 1.1) + 0.015 * Math.sin(7 * a + 0.4);
+      rp.setXYZ(i, rp.getX(i) * k, rp.getY(i) * k, rp.getZ(i) * (1 + 0.6 * (k - 1) * 8));
+    }
+    rimGeo.computeVertexNormals();
+    this.rim = new THREE.Mesh(rimGeo, this.rimMat);
     this.rim.rotation.x = Math.PI / 2;
     this.rim.castShadow = true;
     this.inner.add(this.rim);
@@ -240,6 +269,35 @@ totalEmissiveRadiance += uGlowColor * uGlow * (exp(-waxDepth / 0.55) * 1.2 + exp
     this.pool = new THREE.Mesh(new THREE.CircleGeometry(R - 0.14, 48), this.poolMat);
     this.pool.rotation.x = -Math.PI / 2;
     this.inner.add(this.pool);
+
+    // a few drips run down from the rim (they go down with it as the candle burns)
+    // a run of wax: a thin trail from the rim swelling into a bead where it stopped, lying against the pillar
+    this.dripMat = new THREE.MeshStandardMaterial({ color: 0xd8cbb3, roughness: 0.42, ...fade });
+    const dripGeo = (r, len) => {
+      const pts = [
+        [0, 0.05],
+        [0.55 * r, 0],
+        [0.42 * r, -0.3 * len],
+        [0.5 * r, -0.7 * len],
+        [0.95 * r, -len + 0.9 * r],
+        [0.8 * r, -len + 0.25 * r],
+        [0, -len],
+      ];
+      return new THREE.LatheGeometry(pts.map(([x, y]) => new THREE.Vector2(x, y)), 14);
+    };
+    this.drips = [
+      [1.15, 0.13, 1.1],
+      [2.1, 0.1, 0.55],
+      [4.3, 0.15, 1.6],
+    ].map(([a, r, len]) => {
+      const m = new THREE.Mesh(dripGeo(r, len), this.dripMat);
+      m.position.set(Math.cos(a) * (R + r * 0.1), 0, Math.sin(a) * (R + r * 0.1));
+      m.scale.set(1, 1, 0.55);
+      m.lookAt(0, 0, 0);
+      m.castShadow = true;
+      this.inner.add(m);
+      return { m, drop: 0 };
+    });
 
     // wick and ember
     this.wickMat = new THREE.MeshStandardMaterial({ color: 0x2a231e, roughness: 0.9, ...fade });
@@ -288,7 +346,7 @@ totalEmissiveRadiance += uGlowColor * uGlow * (exp(-waxDepth / 0.55) * 1.2 + exp
     this.particles = Array.from({ length: NS }, () => ({ alive: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, age: 0, life: 1, seed: Math.random() }));
     this.smokeEmit = 0;
 
-    this.fadeMats = [this.dishMat, this.waxMat, this.rimMat, this.poolMat, this.wickMat];
+    this.fadeMats = [this.dishMat, this.waxMat, this.rimMat, this.poolMat, this.wickMat, this.dripMat];
   }
 
   // ---------------------------------------------------------------- the sitting
@@ -453,6 +511,7 @@ totalEmissiveRadiance += uGlowColor * uGlow * (exp(-waxDepth / 0.55) * 1.2 + exp
     this.body.scale.y = this.height;
     this.glowU.uHeight.value = this.height;
     this.rim.position.y = top - 0.06;
+    for (const d of this.drips) d.m.position.y = top - 0.12 - d.drop;
     this.pool.position.y = top - 0.1;
     this.wick.position.set(0, top - 0.12, 0);
     const wickTip = new THREE.Vector3(Math.sin(0.18) * 0.6, top - 0.12 + Math.cos(0.18) * 0.6, 0);

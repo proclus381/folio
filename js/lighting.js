@@ -14,6 +14,7 @@
 
 import * as THREE from 'three';
 import { clamp, lerp } from './anim.js';
+import { setRoomLight } from './room.js';
 
 // ------------------------------------------------------------------ colour of light
 // Hand-tuned linear colours for paper (black-body hues, desaturated the way a page under them reads).
@@ -122,6 +123,8 @@ export const LIGHTS = {
 };
 
 const LS_KEY = 'folio.light.v1';
+// the side each light's room was rendered with (tools/blender/room_lights.py); the other side mirrors it
+const ROOM_SIDE = { candle: 1, oil: 1, desk: 1, fire: -1, sun: -1, rain: -1 };
 function defaults() {
   const s = {};
   for (const [id, L] of Object.entries(LIGHTS)) {
@@ -467,6 +470,14 @@ export class Lighting {
       flash = Math.max(flash, s.flash || 0);
       if (!wall && s.wall) wall = s.wall(camera, app.width, app.height);
     }
+    // reflections: blend toward the room of the strongest room light (else the candle's), mirrored to its side
+    let rl = null;
+    for (const [id, s] of Object.entries(this.sources)) {
+      if (s.dim <= 0.001) continue;
+      if (!rl || (rl.id === 'candle' && id !== 'candle') || ((id === 'candle') === (rl.id === 'candle') && s.dim > rl.s.dim)) rl = { id, s };
+    }
+    if (rl) setRoomLight(rl.id, rl.s.dim, (this.store.settings[rl.id]?.side ?? ROOM_SIDE[rl.id]) * ROOM_SIDE[rl.id] >= 0 ? 1 : -1);
+    else setRoomLight(null, 0);
     app.ambient.intensity = b.ambient * amb;
     app.ambient.color.copy(ambC);
     app.key.intensity = b.key * key;
