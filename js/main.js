@@ -1093,10 +1093,6 @@ class App {
   }
 
   onPointerDown(e) {
-    if (this.reader.isOpen && this.reader.isZen && !this.reader.hitBook(e.clientX, e.clientY)) {
-      this.reader.setZen(false);
-      return;
-    }
     this.canvas.setPointerCapture?.(e.pointerId);
     if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
     if (this.ui.panelMode && e.pointerType !== 'mouse') this.ui.closePanel();
@@ -1284,15 +1280,6 @@ class App {
   onKey(e) {
     const tag = (e.target && e.target.tagName) || '';
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-    if (e.key === 'Escape' && this.reader.isOpen && this.reader.isZen) {
-      this.reader.setZen(false);
-      e.preventDefault();
-      return;
-    }
-    if (this.reader.isOpen && this.reader.isZen) {
-      if (this.reader.key(e)) e.preventDefault();
-      return;
-    }
     if (e.key === 'Escape' && !document.getElementById('add-menu').hidden) {
       this.ui.toggleAddMenu(false);
       return;

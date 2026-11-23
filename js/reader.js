@@ -24,7 +24,6 @@ import {
 
 const DEG = Math.PI / 180;
 const READ_PITCH = -22 * DEG;
-const ZEN_MARGIN = 10; // px of room left at the closest screen edge in zen mode
 const POOL = 18;
 const OPEN = { lift: 0.42, travelAt: 0.3, travel: 1.15, coverAt: 0.5, cover: 1.0, gapAt: 0.15, gap: 1.0, fanAt: 1.42 };
 const CLOSE = { swing: 0.55, travelAt: 0.22, travel: 0.8, settleAt: 0.95, settle: 0.45, gapAt: 0.35, gap: 0.9, done: 1.45 };
@@ -170,8 +169,6 @@ export class Reader {
     this.zoom = 1;
     this.zoomTarget = 1;
     this.zoomV = { v: 0 };
-    this.zen = false;
-    this.localBox = null; // the book in reader-root coordinates, for the zen fit
     this.pan = new THREE.Vector2();
     this.panTarget = new THREE.Vector2();
     this.panVX = { v: 0 };
@@ -188,33 +185,6 @@ export class Reader {
 
   get isOpen() {
     return this.active;
-  }
-
-  get isZen() {
-    return this.zen;
-  }
-
-  setZen(on) {
-    on = !!on && this.active;
-    if (on && (this.phase !== 'reading' || this.flights.length || this.fan)) on = false;
-    if (this.zen === on) return;
-    this.zen = on;
-    if (on) {
-      this.zoom = this.zoomTarget = 1;
-      this.pan.set(0, 0);
-      this.panTarget.set(0, 0);
-      this.app.shelf.group.visible = false;
-    } else {
-      this.app.shelf.group.visible = true;
-      this.app.shelf.openGapWidth = this.computeGapWidth();
-    }
-    this.app.ui.setZen(on);
-    this.app.invalidate();
-  }
-
-  toggleZen() {
-    this.setZen(!this.zen);
-    return this.zen;
   }
 
   // =============================================================== open / close
@@ -250,7 +220,6 @@ export class Reader {
     this.model = new BookModel(d, mats, { withLeftStack: true });
     this.model.group.position.copy(d.center).multiplyScalar(-1);
     this.root.add(this.model.group);
-    this.localBox = null;
     this.leafGroup = new THREE.Group();
     this.model.group.add(this.leafGroup);
     this.model.set(Math.PI, 0, 0);
@@ -311,7 +280,6 @@ export class Reader {
 
   close() {
     if (!this.active || this.phase === 'closing') return;
-    if (this.zen) this.setZen(false);
     if (this.phase === 'opening' && this.tl < 0.4) {
       // barely started: just go back
     }
@@ -347,7 +315,6 @@ export class Reader {
 
   finishClose() {
     const app = this.app;
-    if (this.zen) this.setZen(false);
     for (const leaf of this.leafOf.values()) this.releaseLeaf(leaf);
     this.leafOf.clear();
     this.root.remove(this.model.group);
@@ -401,93 +368,20 @@ export class Reader {
     const W = app.width;
     const H = app.height;
     const tanH = Math.tan((app.camera.fov * DEG) / 2);
-    const zen = this.zen;
-    const top = zen ? ZEN_MARGIN : app.ui.readTop();
-    const bottom = zen ? H - ZEN_MARGIN : H - app.ui.readBottom();
+    const top = app.ui.readTop();
+    const bottom = H - app.ui.readBottom();
     const availH = Math.max(100, bottom - top);
-    const availW = zen ? Math.max(100, W - 2 * ZEN_MARGIN) : W * (W < 700 ? 0.97 : 0.94);
+    const availW = W * (W < 700 ? 0.97 : 0.94);
     const openW = 2 * (d.Wp + d.ov) + 0.3;
     const projH = d.Hc * Math.cos(READ_PITCH) + d.tp * 0.4 + 0.8;
     const need = Math.max(projH / ((2 * tanH * availH) / H), openW / ((2 * tanH * (W / H) * availW) / W));
     const base = app.cameraBase;
     const dMax = base.z - SHELF_Z + 3; // never behind the shelf's shadow wall
+    const dist = Math.min(need, dMax);
+    const scale = dist / need;
     const yPx = (top + bottom) / 2;
-    const place = (n) => {
-      const dist = Math.min(n, dMax);
-      const scale = dist / n;
-      const yOff = ((H / 2 - yPx) / H) * 2 * tanH * dist;
-      return { pos: new THREE.Vector3(base.x, base.y + yOff, base.z - dist), scale, dist, openW: openW * scale, need: n };
-    };
-    let fit = place(need);
-    if (zen) fit = this.fitZen(fit, place, availW, availH);
-    return fit;
-  }
-
-  bookLocalBox() {
-    if (this.localBox) return this.localBox;
-    const box = new THREE.Box3();
-    this.root.updateWorldMatrix(true, true);
-    const inv = new THREE.Matrix4().copy(this.root.matrixWorld).invert();
-    const m = new THREE.Matrix4();
-    this.model.group.traverse((o) => {
-      if (!o.isMesh || !o.geometry) return;
-      for (let p = o; p && p !== this.root; p = p.parent) if (!p.visible) return;
-      if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
-      m.multiplyMatrices(inv, o.matrixWorld);
-      box.union(o.geometry.boundingBox.clone().applyMatrix4(m));
-    });
-    this.localBox = box;
-    return box;
-  }
-
-  projectBook(fit) {
-    const app = this.app;
-    const d = this.d;
-    const cam = new THREE.PerspectiveCamera(app.camera.fov, app.width / app.height, 1, 1200);
-    cam.position.copy(app.cameraBase);
-    cam.updateMatrixWorld();
-    cam.updateProjectionMatrix();
-    const q = new THREE.Quaternion().setFromEuler(_e.set(READ_PITCH, 0, 0, 'YXZ'));
-    const s = fit.scale;
-    const anchor = _v.set(0, 0, d.tp * 0.25).sub(d.center).multiplyScalar(s).applyQuaternion(q);
-    const pos = _P.copy(fit.pos).sub(anchor);
-    const box = this.bookLocalBox();
-    let left = Infinity;
-    let right = -Infinity;
-    let top = Infinity;
-    let bottom = -Infinity;
-    for (let i = 0; i < 8; i++) {
-      _T.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z);
-      _T.multiplyScalar(s).applyQuaternion(q).add(pos).project(cam);
-      const x = ((_T.x + 1) / 2) * app.width;
-      const y = ((1 - _T.y) / 2) * app.height;
-      if (x < left) left = x;
-      if (x > right) right = x;
-      if (y < top) top = y;
-      if (y > bottom) bottom = y;
-    }
-    return { left, right, top, bottom };
-  }
-
-  fitZen(fit, place, availW, availH) {
-    const app = this.app;
-    const tanH = Math.tan((app.camera.fov * DEG) / 2);
-    for (let i = 0; i < 4; i++) {
-      const b = this.projectBook(fit);
-      const k = Math.max((b.right - b.left) / availW, (b.bottom - b.top) / availH);
-      if (!Number.isFinite(k) || Math.abs(k - 1) < 0.001) break;
-      fit = place(fit.need * k);
-    }
-    const wpp = (2 * tanH * fit.dist) / app.height;
-    for (let i = 0; i < 2; i++) {
-      const b = this.projectBook(fit);
-      const dx = (app.width / 2 - (b.left + b.right) / 2) * wpp;
-      const dy = ((b.top + b.bottom) / 2 - app.height / 2) * wpp;
-      if (Math.abs(dx) < 0.002 && Math.abs(dy) < 0.002) break;
-      fit.pos.x += dx;
-      fit.pos.y += dy;
-    }
-    return fit;
+    const yOff = ((H / 2 - yPx) / H) * 2 * tanH * dist;
+    return { pos: new THREE.Vector3(base.x, base.y + yOff, base.z - dist), scale, dist, openW: openW * scale };
   }
 
   computeGapWidth() {
@@ -559,10 +453,6 @@ export class Reader {
 
     // parallax follows the mouse while reading
     const px = this.parallax;
-    if (this.zen) {
-      px.tx = 0;
-      px.ty = 0;
-    }
     px.x = smoothDamp(px.x, px.tx, px.vx, 0.35, dt);
     px.y = smoothDamp(px.y, px.ty, px.vy, 0.35, dt);
 
@@ -618,10 +508,6 @@ export class Reader {
     }
 
     // zoom & pan
-    if (this.zen) {
-      this.zoomTarget = 1;
-      this.panTarget.set(0, 0);
-    }
     const z0 = this.zoom;
     this.zoom = smoothDamp(this.zoom, this.zoomTarget, this.zoomV, 0.16, dt);
     this.pan.x = smoothDamp(this.pan.x, this.panTarget.x, this.panVX, 0.14, dt);
@@ -1874,12 +1760,6 @@ export class Reader {
     return { leaf, page, front, u: front ? hit.uv.x : 1 - hit.uv.x, v: 1 - hit.uv.y, uvx: hit.uv.x, uvy: hit.uv.y };
   }
 
-  hitBook(x, y) {
-    if (!this.active) return false;
-    const b = this.projectBook(this.readFit());
-    return x >= b.left && x <= b.right && y >= b.top && y <= b.bottom;
-  }
-
   // =============================================================== input
   pointerDown(e) {
     if (!this.active) return;
@@ -2498,12 +2378,8 @@ export class Reader {
       case 'b':
         this.toggleBookmark();
         return true;
-      case 'z':
-        this.toggleZen();
-        return true;
       case 'Escape':
-        if (this.zen) this.setZen(false);
-        else if (this.tool) this.setTool(this.tool);
+        if (this.tool) this.setTool(this.tool);
         else if (this.zoomTarget > 1.05) this.setZoom(1);
         else this.close();
         return true;
