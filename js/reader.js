@@ -73,10 +73,11 @@ const TIP = {
 const CATCH = { brake: 0.05, resume: 0.08, delay: 0.06, hold: 0.2, blend: 0.25 };
 
 // Several leaves at once (Settings ▸ Turning ▸ Several leaves: Clump). A jump of more than three leaves turns as one
-// block instead of a fan: its leaves are bound at the spine and fan only a little at the fore-edge (twice the block's
-// own thickness, at least 6 mm, so it reads as a block), the top leaf (the one it was lifted by) curls on its own and the rest stay stiff together. The
-// turn takes 0.7 s + 45 ms · log2(leaves), at most 1.1 s (stripe.press's gather).
-const CLUMP = { layers: 8, spread: 2.0, minSpread: 0.6, maxSpread: 2.6 };
+// block instead of a fan: the block as it is, its first and last leaf as far apart as the leaves between them are
+// thick, its head, fore-edge and tail closed with page edges like the stacks', bending less the thicker it is. The
+// stack it leaves is that much thinner from the moment it lifts, the one it lands on that much thicker when it's
+// down. The turn takes 0.7 s + 45 ms · log2(leaves), at most 1.1 s (stripe.press's gather).
+const CLUMP = { minThick: 0.06 };
 const clumpDur = (n) => Math.min(1.1, 0.7 + 0.045 * Math.log2(Math.max(1, n)));
 
 // The thumb on the fore-edge (Settings ▸ Turning ▸ Riffle and gather). Pressed near a page's outer edge:
@@ -84,7 +85,7 @@ const clumpDur = (n) => Math.min(1.1, 0.7 + 0.045 * Math.log2(Math.max(1, n)));
 //    the faster the slide the more in the air (up to eight), as through a flipbook;
 //  - hold a moment (0.35 s), then slide down: gather, each 14 px takes one more leaf into a block lifted under the
 //    thumb; then turn the block toward the spine with the finger, and let go: it lands, or falls back.
-const RIFFLE = { step: 16, dur: 0.55, max: 8, arm: 0.35, gather: 14 };
+const RIFFLE = { step: 16, dur: 0.55, max: 8, arm: 0.35, gather: 14, decide: 10, beyond: 2.5 };
 
 // Opening (Settings ▸ Turning ▸ Opening: Settle). As the book lands open at your place, the top leaves on each side
 // spring up a little from the spine, then settle back onto their stacks one after another, the deepest first
@@ -536,6 +537,7 @@ export class Reader {
       angle = 0;
       openness = 1;
     }
+    this.model.air = this.fan && this.fan.clump ? this.fan.T : 0; // a block of leaves in the air
     this.model.set(angle, hL, openness);
     this.tabR = this.cachedTable('R', this.model.hR, openness);
     this.tabL = this.cachedTable('L', hL, openness);
@@ -543,6 +545,7 @@ export class Reader {
     this.syncLeaves(time);
     const env = { Wp: d.Wp, Hp: d.Hp, tabR: this.tabR, tabL: this.tabL };
     for (const leaf of this.leafOf.values()) leaf.deform(env);
+    this.updateClumpEdge();
     if (this.updateMarkers(dt, leftCount)) busy = true;
     // ink drawn since the last frame: just the changed pixels, onto the GPU in place
     if (this.ink) this.ink.flush(this.uploadRect);
@@ -766,7 +769,9 @@ export class Reader {
     const N = this.d.leaves;
     if (this.fan) {
       const f = this.fan;
-      const pr = smoothstep(0.15, 0.9, f.clump ? f.tc : clamp((time - f.start) / f.total, 0, 1));
+      // (a block carries its own leaves: the left stack keeps the smaller count until it's down)
+      if (f.clump) return Math.min(f.s0, f.s1);
+      const pr = smoothstep(0.15, 0.9, clamp((time - f.start) / f.total, 0, 1));
       return lerp(f.s0, f.s1, pr);
     }
     let c = this.s;
@@ -846,6 +851,7 @@ export class Reader {
       if (this.phase !== 'closing' && leaf.mesh.parent !== this.leafGroup) this.leafGroup.add(leaf.mesh);
       leaf.t = st.t;
       leaf.eps = st.eps;
+      leaf.off = st.off || 0;
       if (st.curl) {
         Object.assign(leaf.curl, st.curl);
         leaf.bend = st.bend || 0;
@@ -1110,7 +1116,7 @@ export class Reader {
 
   /**
    * A block of leaves from here to s1 (CLUMP). mode 'auto' turns it (a jump); 'drag' follows a thumb (gather), keeping
-   * the angle it has. `angle`: the top leaf's fold, from where it was taken.
+   * the angle it has. `angle`: its fold, from where it was taken.
    */
   startClump(s1, time, mode = 'auto', angle = -0.25) {
     const s0 = this.s;
@@ -1118,44 +1124,28 @@ export class Reader {
     const dir = Math.sign(s1 - s0);
     if (!count) return;
     const prev = this.fan && this.fan.clump ? this.fan : null;
-    const m = Math.min(count, CLUMP.layers);
-    const ks = new Set();
-    for (let i = 0; i < m; i++) {
-      const j = m > 1 ? Math.round((i * (count - 1)) / (m - 1)) : 0;
-      ks.add(dir > 0 ? s0 + j : s0 - 1 - j);
-    }
-    // a flagged leaf in the block goes with it, so its flag does
-    const lo = Math.min(s0, s1);
-    const hi = Math.max(s0, s1);
-    let extra = 0;
-    for (const f of this.flags || []) if (f.k >= lo && f.k < hi && !ks.has(f.k) && extra < 6 && ++extra) ks.add(f.k);
-    const order = [...ks].sort((a, b) => (dir > 0 ? a - b : b - a));
-    const n = order.length;
-    // bound at the spine, the block fans at its fore-edge by about its own thickness
-    const thick = (count * this.d.tp) / this.d.leaves;
-    const spread = clamp(thick * CLUMP.spread, CLUMP.minSpread, CLUMP.maxSpread);
-    const delta = n > 1 ? spread / (Math.PI * this.d.Wp * (n - 1)) : 0;
-    const leaves = order.map((k, i) => ({
-      k,
-      dir,
-      i,
-      t: dir > 0 ? 0 : 1,
-      eps: 0.02,
-      curl: { amount: 0, power: 0.86, span: 32.4, angle, pivotU: 0.6, pivotV: 0.5, cone: 0 },
-      bend: 0,
-      fanTex: i === 0 || i === n - 1 ? null : this.fanPaper[i % this.fanPaper.length],
-    }));
+    // the block as it is: its first and last leaf, as far apart as the leaves between them are thick
+    const kMin = Math.min(s0, s1);
+    const kMax = Math.max(s0, s1) - 1;
+    const T = Math.max(CLUMP.minThick, (count * this.d.tp) / this.d.leaves);
+    const curl = () => ({ amount: 0, power: 0.86, span: 32.4, angle, pivotU: 0.6, pivotV: 0.5, cone: 0 });
+    // the face toward the leaf's front (its lower page number) is offset by the thickness; turning back, the block
+    // lies the other way up
+    const leaves = [{ k: kMin, dir, i: 0, t: dir > 0 ? 0 : 1, eps: 0.02, off: dir > 0 ? (count > 1 ? T : 0) : 0, curl: curl(), bend: 0, fanTex: null }];
+    if (count > 1) leaves.push({ k: kMax, dir, i: 1, t: dir > 0 ? 0 : 1, eps: 0.02, off: dir > 0 ? 0 : -T, curl: curl(), bend: 0, fanTex: null });
     this.fan = {
       clump: true,
       s0,
       s1,
       dir,
       count,
+      T,
+      kMin,
+      kMax,
       start: time,
       total: clumpDur(count),
       leaves,
-      m: n,
-      delta,
+      m: leaves.length,
       mode,
       tc: prev ? prev.tc : 0,
       tv: prev ? prev.tv : { v: 0 },
@@ -1183,16 +1173,15 @@ export class Reader {
     const flex = this.flex;
     const stiff = 1 / (1 + f.count / 24); // a thicker block bends less
     const swing = Math.pow(Math.sin(Math.PI * f.tc), 0.8);
-    const k = 1 + f.delta * (f.m - 1);
+    const bend = f.dir * 0.4 * stiff * Math.pow(flex, 0.8) * Math.sin(2 * Math.PI * f.tc);
+    const curl = (f.mode === 'drag' ? 3.2 : 2.2) * Math.pow(flex, 0.7) * stiff * swing;
+    // it leaves one stack and lands on the other: its base moves up by its thickness as it passes upright
+    const eps = 0.02 + f.T * smoothstep(0.35, 0.65, f.tc);
     for (const fl of f.leaves) {
-      // the top leaf leads by a hair: the block is bound at the spine and fans a little at the fore-edge
-      const ti = clamp(f.tc * k - f.delta * fl.i, 0, 1);
-      fl.t = f.dir > 0 ? ti : 1 - ti;
-      const top = fl.i === 0;
-      fl.bend = f.dir * 0.4 * stiff * Math.pow(flex, 0.8) * Math.sin(2 * Math.PI * f.tc);
-      // the leaf it was lifted by curls on its own; the rest hold together
-      fl.curl.amount = (top ? (f.mode === 'drag' ? 4.2 : 2.6) * Math.pow(flex, 0.7) : 0.5 * stiff * flex) * swing;
-      fl.eps = lerp(0.02 + (f.m - fl.i) * 0.004, 0.02 + fl.i * 0.004, ti);
+      fl.t = f.dir > 0 ? f.tc : 1 - f.tc;
+      fl.bend = bend;
+      fl.curl.amount = curl;
+      fl.eps = eps;
     }
     if (done) {
       const turned = f.goal === 1;
@@ -1201,6 +1190,79 @@ export class Reader {
       if (turned) this.app.lighting.pagesRead += 2 * f.count;
       this.onSpreadChanged();
     }
+  }
+
+  /** The block's sides (head, fore-edge, tail): page edges between its two faces, drawn as the stacks' are. */
+  updateClumpEdge() {
+    const f = this.fan && this.fan.clump && this.fan.m > 1 ? this.fan : null;
+    const a = f && this.leafOf.get(f.kMax);
+    const b = f && this.leafOf.get(f.kMin);
+    if (!a || !b) {
+      if (this.clumpEdge) this.clumpEdge.visible = false;
+      return;
+    }
+    if (!this.clumpEdge) {
+      const n = NX + 1 + NY + NX; // tail (gutter → fore-edge), fore-edge (tail → head), head (fore-edge → gutter)
+      this.clumpPath = [];
+      for (let i = 0; i <= NX; i++) this.clumpPath.push([i, 0, i / NX]);
+      for (let j = 1; j <= NY; j++) this.clumpPath.push([NX, j, j / NY]);
+      for (let i = NX - 1; i >= 0; i--) this.clumpPath.push([i, NY, i / NX]);
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 2 * 3), 3).setUsage(THREE.DynamicDrawUsage));
+      g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2 * 2), 2).setUsage(THREE.DynamicDrawUsage));
+      g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(n * 2 * 3), 3));
+      this.clumpEdge = new THREE.Mesh(g, this.model.rightStack.mesh.material[1]);
+      this.clumpEdge.castShadow = true;
+      this.clumpEdge.frustumCulled = false;
+      this.clumpWind = 0;
+    }
+    const m = this.clumpEdge;
+    if (m.parent !== this.leafGroup) this.leafGroup.add(m);
+    m.material = this.model.rightStack.mesh.material[1];
+    m.visible = true;
+    const n = this.clumpPath.length;
+    const P = m.geometry.attributes.position.array;
+    const U = m.geometry.attributes.uv.array;
+    const A = a.pos;
+    const B = b.pos;
+    const vTop = f.T / 1.15; // the stacks' edge texture: one repeat per 1.15 cm of thickness
+    for (let q = 0; q < n; q++) {
+      const [i, j, u] = this.clumpPath[q];
+      const v = (j * (NX + 1) + i) * 3;
+      P[q * 3] = A[v];
+      P[q * 3 + 1] = A[v + 1];
+      P[q * 3 + 2] = A[v + 2];
+      P[(n + q) * 3] = B[v];
+      P[(n + q) * 3 + 1] = B[v + 1];
+      P[(n + q) * 3 + 2] = B[v + 2];
+      U[q * 2] = u;
+      U[q * 2 + 1] = 0;
+      U[(n + q) * 2] = u;
+      U[(n + q) * 2 + 1] = vTop;
+    }
+    // face outward: check a quad in the middle of the fore-edge against the way out of the block
+    const q = NX + Math.floor(NY / 2);
+    const p0 = _v.fromArray(P, q * 3);
+    const e1 = _T.fromArray(P, (q + 1) * 3).sub(p0);
+    const e2 = _U.fromArray(P, (n + q) * 3).sub(p0);
+    const out = _N.fromArray(A, (Math.floor(NY / 2) * (NX + 1) + NX) * 3).sub(_w.fromArray(A, (Math.floor(NY / 2) * (NX + 1) + Math.floor(NX / 2)) * 3));
+    const wind = e1.cross(e2).dot(out) > 0 ? 1 : -1;
+    if (wind !== this.clumpWind) {
+      this.clumpWind = wind;
+      const idx = [];
+      for (let k = 0; k < n - 1; k++) {
+        const a0 = k;
+        const a1 = k + 1;
+        const b0 = n + k;
+        const b1 = n + k + 1;
+        if (wind > 0) idx.push(a0, a1, b0, a1, b1, b0);
+        else idx.push(a0, b0, a1, a1, b0, b1);
+      }
+      m.geometry.setIndex(idx);
+    }
+    m.geometry.attributes.position.needsUpdate = true;
+    m.geometry.attributes.uv.needsUpdate = true;
+    m.geometry.computeVertexNormals();
   }
 
   /** The thumb slid along the edge at once: the leaf under it flicks over first, then one per RIFFLE.step px. */
@@ -1274,7 +1336,7 @@ export class Reader {
     }
     const c = this.fan;
     if (!c || !c.clump) return;
-    const lift = Math.min(0.1, 0.03 + 0.008 * c.m); // the gathered block stands a little off the stack, to be seen
+    const lift = Math.min(0.1, 0.03 + 0.004 * c.count); // the gathered block stands a little off the stack, to be seen
     const bp = g.offset != null ? this.bookPoint(x, y) : null;
     let t = lift;
     if (bp) {
@@ -1836,6 +1898,17 @@ export class Reader {
         return;
       }
     }
+    if (!hit && !zoomed && !this.fan && this.app.riffle) {
+      // on the page block's own edge, or just beyond the page: that is its outer edge too (to riffle, gather, turn)
+      const bp = this.bookPoint(e.clientX, e.clientY);
+      const ax = bp ? Math.abs(bp.x) : 0;
+      if (bp && ax > this.d.Wp * 0.8 && ax < this.d.Wp + RIFFLE.beyond && Math.abs(bp.y) < this.d.Hp / 2 + 1) {
+        if (this.startDrag(bp.x > 0 ? +1 : -1, e.clientX, e.clientY)) {
+          this.gesture = { mode: 'turn', direct: true, clock0: this.app.clock, decided: false };
+          return;
+        }
+      }
+    }
     this.gesture = { mode: 'pending', hit, zoomed };
   }
 
@@ -1910,11 +1983,11 @@ export class Reader {
     if (g.mode === 'turn' && g.direct && !g.decided && this.app.riffle) {
       const dx = e.clientX - p.x0;
       const dy = e.clientY - p.y0;
-      if (Math.hypot(dx, dy) > 14) {
+      if (Math.hypot(dx, dy) > RIFFLE.decide) {
         g.decided = true;
         const fl = this.flights.find((f) => f.mode === 'drag');
         const lifted = fl ? (fl.dir > 0 ? fl.t : 1 - fl.t) : 1;
-        if (fl && Math.abs(dy) > 2.2 * Math.abs(dx) && lifted < 0.08) {
+        if (fl && Math.abs(dy) > 1.4 * Math.abs(dx) && lifted < 0.1) {
           if (g.armed && dy > 0) this.startGather(g, fl, p);
           else this.startRiffle(g, fl, p);
           return;

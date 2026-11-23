@@ -674,7 +674,8 @@ export class BookModel {
   }
 
   get hR() {
-    return Math.max(0, this.d.tp - this.hL);
+    // (`air`: leaves lifted off it as a block, reader.js)
+    return Math.max(0, this.d.tp - this.hL - (this.air || 0));
   }
 
   apply() {

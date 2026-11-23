@@ -411,6 +411,7 @@ export class Leaf {
     this.t = 0; // 0 resting right … 1 resting left
     this.bend = 0; // + tip leads the turn, − tip trails
     this.eps = 0.01; // layer lift above the stack
+    this.off = 0; // shifted this far along its front's normal (cm): the far face of a block of leaves
     this.curl = { amount: 0, power: 0.86, span: 32.4, angle: 0, pivotU: 0.74, pivotV: 0.5, cone: 0 };
     this.sig = '';
   }
@@ -429,7 +430,7 @@ export class Leaf {
   deform(env, force = false) {
     const c = this.curl;
     const cone = c.cone || 0;
-    const sig = `${this.t.toFixed(5)}|${this.bend.toFixed(4)}|${this.eps}|${c.amount.toFixed(4)}|${c.angle.toFixed(4)}|${c.pivotU}|${c.pivotV}|${c.span}|${cone.toFixed(3)}|${env.tabR.h.toFixed(5)}|${env.tabR.o.toFixed(4)}|${env.tabL.h.toFixed(5)}`;
+    const sig = `${this.t.toFixed(5)}|${this.bend.toFixed(4)}|${this.eps}|${c.amount.toFixed(4)}|${c.angle.toFixed(4)}|${c.pivotU}|${c.pivotV}|${c.span}|${cone.toFixed(3)}|${this.off.toFixed(4)}|${env.tabR.h.toFixed(5)}|${env.tabR.o.toFixed(4)}|${env.tabL.h.toFixed(5)}`;
     if (!force && sig === this.sig) return false;
     this.sig = sig;
     this.material.userData.u.turnLift.value = Math.sin(Math.PI * Math.min(1, Math.max(0, this.t)));
@@ -543,6 +544,12 @@ export class Leaf {
         P[v++] = yl;
         P[v++] = bz + nz * out;
       }
+    }
+    if (this.off) {
+      // the far face of a block: the same sheet, moved out along its own normals by the block's thickness
+      this.geometry.computeVertexNormals();
+      const Nn = this.geometry.attributes.normal.array;
+      for (let q = 0; q < P.length; q++) P[q] += Nn[q] * this.off;
     }
     this.geometry.attributes.position.needsUpdate = true;
     this.geometry.computeVertexNormals();
