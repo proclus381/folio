@@ -942,9 +942,13 @@ export class Reader {
     return this.active && this.phase === 'reading' && !this.fan;
   }
 
+  flightCompletes(f) {
+    return f.mode === 'auto' || (f.mode === 'settle' && (f.dir > 0 ? f.goal === 1 : f.goal === 0));
+  }
+
   next() {
     if (!this.canTurn()) return false;
-    if (this.flights.some((f) => f.dir < 0 || f.mode !== 'auto')) return false;
+    if (this.flights.some((f) => f.dir < 0 || !this.flightCompletes(f))) return false;
     const fwd = this.flights.length;
     const k = this.s + fwd;
     if (k >= this.d.leaves || fwd >= 4) {
@@ -960,7 +964,7 @@ export class Reader {
 
   prev() {
     if (!this.canTurn()) return false;
-    if (this.flights.some((f) => f.dir > 0 || f.mode !== 'auto')) return false;
+    if (this.flights.some((f) => f.dir > 0 || !this.flightCompletes(f))) return false;
     const back = this.flights.length;
     const k = this.s - 1 - back;
     if (k < 0 || back >= 4) {
@@ -1366,6 +1370,8 @@ export class Reader {
         if (this.startDrag(dir, p.x0, p.y0, true)) {
           g.mode = 'turn';
           this.updateDrag(e.clientX, e.clientY);
+        } else if (this.flights.length) {
+          g.mode = (dir > 0 ? this.next() : this.prev()) ? 'queued' : 'none';
         } else g.mode = 'none';
       } else g.mode = 'none';
     }
@@ -1427,7 +1433,7 @@ export class Reader {
     this.app.clearPeek();
     const W = this.app.width;
     const now = performance.now();
-    const dbl = now - this.lastTap.t < this.app.tapMs * 0.75 && Math.hypot(x - this.lastTap.x, y - this.lastTap.y) < 40;
+    const dbl = !this.flights.length && now - this.lastTap.t < this.app.tapMs * 0.75 && Math.hypot(x - this.lastTap.x, y - this.lastTap.y) < 40;
     this.lastTap = { t: now, x, y };
     const zone = x / W;
     const zoomed = this.zoomTarget > 1.05;
