@@ -83,7 +83,6 @@ export class UI {
     $('flag-tip').addEventListener('click', () => this.flagTipGo && this.flagTipGo());
     $('rb-undo').addEventListener('click', () => r().undo());
     $('rb-mag').addEventListener('click', () => app.toggleMagnifier());
-    $('rb-zen').addEventListener('click', () => r().toggleZen());
     this.initLightPop();
     for (const id of ['rb-pink', 'rb-yellow', 'rb-pen', 'rb-pencil', 'rb-eraser']) {
       const b = $(id);
@@ -233,23 +232,7 @@ export class UI {
     this.body.dataset.mode = on ? 'reading' : 'shelf';
     this.toggleAddMenu(false);
     $('readerbar').hidden = !on;
-    if (!on) {
-      this.setZen(false);
-      this.closePopovers();
-    }
-  }
-
-  setZen(on) {
-    this.body.dataset.zen = on ? 'true' : 'false';
-    const b = $('rb-zen');
-    b.setAttribute('aria-pressed', String(on));
-    b.setAttribute('aria-label', on ? 'Leave zen mode' : 'Zen mode');
-    b.title = on ? 'Leave zen mode (Esc)' : 'Zen mode (Z)';
-    if (on) {
-      this.closePopovers();
-      this.closePanel();
-    }
-    for (const el of [document.querySelector('.top'), document.querySelector('.bottom'), $('readerbar')]) el.inert = on;
+    if (!on) this.closePopovers();
   }
 
 
