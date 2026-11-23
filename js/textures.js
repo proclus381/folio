@@ -967,6 +967,22 @@ export function makeBindingTextures(kind) {
   };
 }
 
+const PAPER_SOURCE_KEY = 'folio.paperMaps';
+function loadPaperSource() {
+  try {
+    return localStorage.getItem(PAPER_SOURCE_KEY) === 'classic' ? 'classic' : 'sim';
+  } catch {
+    return 'sim';
+  }
+}
+function savePaperSource(src) {
+  try {
+    localStorage.setItem(PAPER_SOURCE_KEY, src);
+  } catch {
+    /* not remembered */
+  }
+}
+
 /**
  * The paper maps as flat stand-ins first, filled in by `fill()` — started a moment after the shelf is up,
  * or when a book opens first — a few milliseconds at a time.
@@ -985,15 +1001,26 @@ export function makeDeferredPaperTextures() {
   // neither the shelf nor an opening book stutters, and the last few kept (≈ 5 MB a type)
   const cache = new Map();
   const jobs = new Map();
-  const make = (type) => {
-    if (cache.has(type)) {
-      const maps = cache.get(type);
-      cache.delete(type);
-      cache.set(type, maps); // most recently used last
-      return Promise.resolve(maps);
-    }
-    if (jobs.has(type)) return jobs.get(type);
-    const job = new Promise((resolve) => {
+  // Where the maps come from: 'sim', each paper simulated from how it is made (tools/blender/paper.py, the
+  // images in assets/paper/), or 'classic', drawn here as before (also the fallback if an image won't load)
+  t.source = loadPaperSource();
+  const loadImg = (url) =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = url;
+    });
+  const simulated = (type) =>
+    Promise.all(['surface', 'fibre', 'cockle'].map((k) => loadImg(`assets/paper/${type}-${k}.webp`))).then(([normal, fibre, cockle]) => ({
+      normal,
+      fibre,
+      cockle,
+    }));
+  // today's generator, a few milliseconds at a time between frames
+  const drawn = (type) =>
+    new Promise((resolve) => {
       const steps = paperTextureSteps(type);
       const slice = () => {
         const t0 = performance.now();
@@ -1006,14 +1033,28 @@ export function makeDeferredPaperTextures() {
           maps[k] = it.value[k].image;
           it.value[k].dispose();
         }
-        cache.set(type, maps);
-        for (const old of [...cache.keys()]) if (cache.size > 4 && old !== t.type && old !== type) cache.delete(old);
-        jobs.delete(type);
         resolve(maps);
       };
       slice();
     });
-    jobs.set(type, job);
+  const make = (type) => {
+    const key = t.source + ':' + type;
+    if (cache.has(key)) {
+      const maps = cache.get(key);
+      cache.delete(key);
+      cache.set(key, maps); // most recently used last
+      return Promise.resolve(maps);
+    }
+    if (jobs.has(key)) return jobs.get(key);
+    const remember = (maps) => {
+      cache.set(key, maps);
+      for (const old of [...cache.keys()]) if (cache.size > 4 && old !== t.source + ':' + t.type && old !== key) cache.delete(old);
+      jobs.delete(key);
+      return maps;
+    };
+    // (a type whose images won't load is drawn, as before)
+    const job = (t.source === 'sim' ? simulated(type).catch(() => drawn(type)) : drawn(type)).then(remember);
+    jobs.set(key, job);
     return job;
   };
   const show = (type, maps) => {
@@ -1034,10 +1075,19 @@ export function makeDeferredPaperTextures() {
   /** Put a type's maps on the paper: now if they are made, else as soon as they are. */
   t.use = (type = 'wove') => {
     t.want = type;
-    if (t.type === type) return;
+    if (t.type === type && t.shown === t.source) return;
     make(type).then((maps) => {
-      if (t.want === type) show(type, maps);
+      if (t.want === type) {
+        show(type, maps);
+        t.shown = t.source;
+      }
     });
+  };
+  /** Simulated or classic maps (Settings): remembered, and shown at once. */
+  t.setSource = (src) => {
+    t.source = src === 'classic' ? 'classic' : 'sim';
+    savePaperSource(t.source);
+    if (t.want) t.use(t.want);
   };
   t.fill = () => t.use(t.want || 'wove');
   return t;
@@ -1233,7 +1283,11 @@ function drawMark(ctx, cx, cy, size, color) {
  * styles (mono, sans) change the title's face only.
  * `mask`: draw only what is stamped, white on black (see stampedTexture).
  */
-export function makeSpineCanvas(meta, look, spineWorldW, spineWorldH, mask = false) {
+/**
+ * A spine's artwork. `spineWorldW` is the width the canvas covers (round the spine's curve); `faceW` the
+ * width the spine shows head-on, which the lettering and the mark are sized for (the round only bends them).
+ */
+export function makeSpineCanvas(meta, look, spineWorldW, spineWorldH, mask = false, faceW = spineWorldW) {
   const H = 1024;
   const W = Math.max(72, Math.round((H * spineWorldW) / spineWorldH));
   const c = makeCanvas(W, H);
@@ -1243,14 +1297,15 @@ export function makeSpineCanvas(meta, look, spineWorldW, spineWorldH, mask = fal
 
   // one foil for all of it: gold (or the binding's accent) on dark cloth, ink on light
   const col = mask ? '#fff' : luminance(look.cloth) < 0.3 ? look.accent : look.ink;
-  const markSize = Math.min(W * 0.42, 44);
+  const Wf = W * Math.min(1, faceW / spineWorldW); // the canvas width of the face the type is sized for
+  const markSize = Math.min(Wf * 0.42, 44);
   const markY = H - markSize * 1.6;
   drawMark(ctx, W / 2, markY, markSize, col);
 
   const title = (meta.title || 'Untitled').trim();
   const author = (meta.author || '').trim();
   const style = look.spineStyle === 'mono' || look.spineStyle === 'sans' ? look.spineStyle : 'serif';
-  const across = W * 0.74; // room across the spine for type
+  const across = Wf * 0.74; // room across the spine for type
 
   ctx.save();
   ctx.translate(W / 2, 0);
@@ -1499,5 +1554,46 @@ export function stampedTexture(color, mask = null, aniso = 8) {
   t.generateMipmaps = true;
   t.anisotropy = aniso;
   t.needsUpdate = true;
+  return t;
+}
+
+/**
+ * A headband: silk in two colours (`light`, `deep`) worked over a core in slanting beads, as in the Blender
+ * model. u runs along it (one light and one dark bead per unit), v round it. Cached by colour.
+ */
+const bandCache = new Map();
+export function makeHeadbandTexture(light, deep) {
+  const key = light + deep;
+  if (bandCache.has(key)) return bandCache.get(key);
+  const W = 64;
+  const H = 32;
+  const c = makeCanvas(W, H);
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(W, H);
+  // (in sRGB, as the canvas is)
+  const A = new THREE.Color(light).getRGB({ r: 0, g: 0, b: 0 }, THREE.SRGBColorSpace);
+  const B = new THREE.Color(deep).getRGB({ r: 0, g: 0, b: 0 }, THREE.SRGBColorSpace);
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      // a bead's slant: the phase climbs along the band and round it
+      const ph = x / W + (y / H) * 0.5;
+      const f = ph - Math.floor(ph);
+      // two beads per tile, softened over a pixel at their borders
+      const e = 1.2 / W;
+      const t = Math.min(1, Math.max(0, (Math.min(f, 1 - f) - 0.25 + e) / (2 * e)));
+      // t 1: light (the middle of [0.25, 0.75]), 0: deep
+      const col = { r: B.r + (A.r - B.r) * t, g: B.g + (A.g - B.g) * t, b: B.b + (A.b - B.b) * t };
+      // the silk's threads: fine lines along the slant, and each bead rounded a little by the light
+      const th = 0.9 + 0.1 * Math.cos(ph * W * 0.5 * Math.PI);
+      const bead = 0.86 + 0.14 * Math.sin(Math.PI * ((f * 2) % 1));
+      const k = (y * W + x) * 4;
+      img.data[k] = Math.round(255 * Math.min(1, col.r * th * bead));
+      img.data[k + 1] = Math.round(255 * Math.min(1, col.g * th * bead));
+      img.data[k + 2] = Math.round(255 * Math.min(1, col.b * th * bead));
+      img.data[k + 3] = 255;
+    }
+  ctx.putImageData(img, 0, 0);
+  const t = canvasTexture(c, { repeat: [1, 1], aniso: 4 });
+  bandCache.set(key, t);
   return t;
 }

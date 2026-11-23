@@ -10,6 +10,7 @@
 
 import * as THREE from 'three';
 import { makeBindingTextures } from './textures.js';
+import { roomUniforms, ROOM_GLSL } from './room.js';
 
 export const BINDINGS = {
   // normal strength, albedo variation, base roughness, roughness variation, edge wear
@@ -37,8 +38,47 @@ export function setDefaultBinding(kind) {
 
 const kinds = new Map();
 function kindTextures(kind) {
-  if (!kinds.has(kind)) kinds.set(kind, makeBindingTextures(kind));
+  if (!kinds.has(kind)) {
+    // drawn here at once, then replaced by the maps baked in Blender when they have loaded
+    const kt = makeBindingTextures(kind);
+    kinds.set(kind, kt);
+    if (BAKED[kind]) loadBaked(kt, BAKED[kind]);
+  }
   return kinds.get(kind);
+}
+
+// Bindings modelled thread by thread in Blender (tools/blender/weave.py) and rendered into the same two maps,
+// in the same layout and tile, as makeBindingTextures draws them.
+const BAKED = {
+  cloth: { slope: 'assets/bindings/cloth-slope.png', detail: 'assets/bindings/cloth-detail.png' },
+};
+const bakedListeners = [];
+/** Call `fn` when baked binding maps arrive (the scene should be drawn again). */
+export function onBindingMapsLoaded(fn) {
+  bakedListeners.push(fn);
+}
+async function loadBaked(kt, urls) {
+  try {
+    const load = async (url) => {
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = url;
+      await img.decode();
+      return img;
+    };
+    const [slope, detail] = await Promise.all([load(urls.slope), load(urls.detail)]);
+    for (const [tex, img] of [
+      [kt.slope, slope],
+      [kt.detail, detail],
+    ]) {
+      tex.dispose(); // (a new image into an uploaded texture needs fresh storage)
+      tex.image = img;
+      tex.needsUpdate = true;
+    }
+    for (const fn of bakedListeners) fn();
+  } catch {
+    /* the drawn cloth stays */
+  }
 }
 
 // shared by every binding: the room's light level (a burning candle dims it)
@@ -76,10 +116,10 @@ export function makeBindingMaterial({ kind = 'cloth', color = 0xffffff, faceW = 
   mat.userData.face = [faceW, faceH];
   mat.userData.wear = wear;
   mat.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, u);
+    Object.assign(shader.uniforms, u, roomUniforms);
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec2 vBindUv;')
-      .replace('#include <uv_vertex>', '#include <uv_vertex>\nvBindUv = uv;');
+      .replace('#include <common>', '#include <common>\nvarying vec2 vBindUv;\nattribute float folioOcc;\nvarying float vBindOcc;')
+      .replace('#include <uv_vertex>', '#include <uv_vertex>\nvBindUv = uv;\nvBindOcc = folioOcc;');
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
@@ -93,12 +133,10 @@ uniform vec2 mapTexel;
 uniform float roomLight;
 uniform float bindRake;
 varying vec2 vBindUv;
-// a soft room, as seen in a glossy surface: bright ceiling and window, darker floor
-vec3 folioRoom(vec3 r, float rough) {
-  vec3 c = mix(vec3(0.2, 0.19, 0.18), vec3(1.1, 1.08, 1.05), smoothstep(-0.5, 0.6, r.y));
-  c += vec3(0.55, 0.53, 0.5) * pow(max(0.0, dot(r, normalize(vec3(-0.45, 0.55, 0.7)))), 8.0) * (1.0 - rough);
-  return mix(c, vec3(0.55), rough * 0.65);
-}`,
+// the spine's own folds (groove, caps, hollow), baked in Blender; 0 where a mesh doesn't say
+varying float vBindOcc;
+// the room it reflects (room.js: modelled in Blender)
+${ROOM_GLSL}`,
       )
       .replace(
         '#include <map_fragment>',
@@ -167,10 +205,18 @@ material.specularColor *= mix(0.6, 1.0, metal);
         '#include <lights_fragment_end>',
         `#include <lights_fragment_end>
 {
+  // the room's light reaches into a fold only partly, the key light a little less too
+  float bindAO = 1.0 - vBindOcc;
+  reflectedLight.indirectDiffuse *= bindAO;
+  reflectedLight.directDiffuse *= mix(1.0, bindAO, 0.45);
+  reflectedLight.directSpecular *= bindAO;
+}
+{
   // the room in glossy spots (foil, leather), with the right Fresnel and roughness
   vec3 rv = reflect(-geometryViewDir, normal);
+  vec3 rw = (vec4(rv, 0.0) * viewMatrix).xyz; // into the world, where the room is
   // (dielectrics only a little of it: the scene's ambient already stands for most of the room's light)
-  vec3 env = folioRoom(rv, bindRoughEnv) * roomLight * mix(0.3, 1.3, metal);
+  vec3 env = folioRoomEnv(rw, bindRoughEnv) * mix(0.3, 1.3, metal) * (1.0 - vBindOcc);
   reflectedLight.indirectSpecular += env * EnvironmentBRDF(normal, geometryViewDir, material.specularColor, material.specularF90, bindRoughEnv);
   // a faint light skimming from the upper left: only the relief it picks out
   vec3 R = normalize(vec3(-0.62, 0.62, 0.48));
@@ -184,7 +230,7 @@ material.specularColor *= mix(0.6, 1.0, metal);
 }`,
       );
   };
-  mat.customProgramCacheKey = () => 'folio-binding-1';
+  mat.customProgramCacheKey = () => 'folio-binding-3';
   return mat;
 }
 

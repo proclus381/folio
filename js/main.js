@@ -9,7 +9,8 @@ import { OilLamp, DeskLamp } from './lamps.js';
 import { Fireside } from './fireside.js';
 import { SunWindow, RainWindow } from './window.js';
 import { setPaperRoomLight } from './leaf.js';
-import { setBindingRoomLight, setDefaultBinding } from './binding.js';
+import { setBindingRoomLight, setDefaultBinding, onBindingMapsLoaded } from './binding.js';
+import { loadRoom, onRoomLoaded, roomUniforms } from './room.js';
 import { restyleBookMaterials } from './book3d.js';
 import { UI } from './ui.js';
 import { Magnifier } from './magnifier.js';
@@ -208,6 +209,9 @@ class App {
     // the library's paper first; a book's own type is made when it is chosen (onSelect)
     setTimeout(() => paper.use(resolvePaper(this.libraryPaper).type), 1500);
     paper.repeat = new THREE.Vector2(1.5, 2.25);
+    onBindingMapsLoaded(() => this.invalidate()); // the cloth baked in Blender has arrived
+    onRoomLoaded(() => this.invalidate()); // and the room the books reflect
+    loadRoom();
     this.shared = {
       grain,
       paper,
@@ -1308,6 +1312,7 @@ class App {
   onRoomLight(keyK, ambientK) {
     setPaperRoomLight(this.shared.paper, keyK);
     setBindingRoomLight(ambientK);
+    roomUniforms.roomLevel.value = ambientK; // the reflected room is lit as the room is
   }
 
   /** The candle (kept for scripts and old tests). */

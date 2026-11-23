@@ -3,6 +3,7 @@
 
 import * as THREE from 'three';
 import { FONTS } from './textures.js';
+import { reflectRoom } from './room.js';
 
 export const PLANK_STYLES = [
   { key: 'none', label: 'None' },
@@ -70,7 +71,8 @@ export function plankMaterial(style, dark) {
     return m;
   }
   if (style === 'glass')
-    return new THREE.MeshStandardMaterial({ color: 0xd9ece4, roughness: 0.08, metalness: 0, transparent: true, opacity: 0.42, depthWrite: false });
+    // (glass mirrors the room at grazing angles: room.js)
+    return reflectRoom(new THREE.MeshStandardMaterial({ color: 0xd9ece4, roughness: 0.08, metalness: 0, transparent: true, opacity: 0.42, depthWrite: false }), 1.6, 'glass');
   if (style === 'painted') return new THREE.MeshStandardMaterial({ color: dark ? 0x26241f : 0xdcd8cc, roughness: 0.74, metalness: 0 });
   return null;
 }

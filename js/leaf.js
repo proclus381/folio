@@ -7,6 +7,7 @@
 
 import * as THREE from 'three';
 import { stackProfile } from './book3d.js';
+import { roomUniforms, ROOM_GLSL } from './room.js';
 
 export const NX = 44;
 export const NY = 22;
@@ -128,7 +129,7 @@ export function makePageMaterial(paper) {
   };
   mat.userData.u = u;
   mat.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, u);
+    Object.assign(shader.uniforms, u, roomUniforms);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec2 vPageUv;\nvarying vec3 vRake;\nuniform vec3 rakeDir;')
       .replace('#include <uv_vertex>', '#include <uv_vertex>\nvPageUv = uv;')
@@ -137,6 +138,7 @@ export function makePageMaterial(paper) {
       .replace(
         '#include <common>',
         `#include <common>
+${ROOM_GLSL}
 uniform sampler2D mapFront;
 uniform sampler2D mapBack;
 uniform sampler2D inkFront;
@@ -332,6 +334,13 @@ roughnessFactor *= 1.0 - glossMottle * (texture2D(normalMap, folioTuv).b - 0.5) 
   float curlLift = pow(clamp(1.0 - abs(dot(tN, geometryViewDir)), 0.0, 1.0), 1.5);
   float gFall = pow(1.0 - smoothstep(0.0, 0.23, sc), 0.85);
   reflectedLight.indirectDiffuse += (reflectedLight.directDiffuse + reflectedLight.indirectDiffuse) * vec3(1.0, 0.96, 0.92) * gFall * (0.8 + 0.6 * curlLift) * 0.16;
+  // a glossy (coated) paper mirrors the room a little; a matte one (roughness ≥ 0.7, book wove's 0.9) not at all
+  float roomGloss = smoothstep(0.7, 0.3, material.roughness);
+  if (roomGloss > 0.0) {
+    vec3 rw = (vec4(reflect(-geometryViewDir, normal), 0.0) * viewMatrix).xyz;
+    reflectedLight.indirectSpecular += roomGloss * (1.0 - gShade) * folioRoomEnv(rw, material.roughness)
+      * EnvironmentBRDF(normal, geometryViewDir, material.specularColor, material.specularF90, material.roughness);
+  }
 }`,
       )
       .replace(
@@ -345,7 +354,7 @@ roughnessFactor *= 1.0 - glossMottle * (texture2D(normalMap, folioTuv).b - 0.5) 
 #include <opaque_fragment>`,
       );
   };
-  mat.customProgramCacheKey = () => 'folio-paper-13';
+  mat.customProgramCacheKey = () => 'folio-paper-14';
   return mat;
 }
 

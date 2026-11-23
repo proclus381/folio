@@ -189,8 +189,8 @@ export class Shelf {
     const pr = app.paperFor(meta);
     const d = bookDims(meta.pages, meta.aspect, pr.calRel);
     const look = meta.look;
-    const arc = d.T + 0.35;
-    const tex = { spine: spineTexture(meta, look, arc, d.Hc, app.maxAniso) };
+    const arc = d.arc;
+    const tex = { spine: spineTexture(meta, look, arc, d.Hc, app.maxAniso, d.T + 0.35) };
     const mats = makeBookMaterials(look, tex, app.shared, d, pr); // the cover shows plain binding until its art exists
     const model = new BookModel(d, mats, { withLeftStack: false });
     model.set(Math.PI, 0, 0);
@@ -249,7 +249,7 @@ export class Shelf {
     this.clearMarkers(e);
     this.group.remove(e.slot);
     e.model.dispose();
-    for (const k of ['cover', 'back', 'cloth', 'endpaper', 'spine']) e.mats[k].dispose();
+    for (const k of ['cover', 'back', 'cloth', 'endpaper', 'spine', 'headband']) if (e.mats[k]) e.mats[k].dispose(); // (the headband's texture is shared, cached by colour)
     if (e.mats.ownBlock) {
       e.mats.paper.dispose();
       e.mats.edge.dispose();
@@ -265,7 +265,7 @@ export class Shelf {
     e.meta = meta;
     e.look = meta.look;
     e.tex.spine.dispose();
-    e.tex.spine = spineTexture(meta, meta.look, e.d.T + 0.35, e.d.Hc, this.app.maxAniso);
+    e.tex.spine = spineTexture(meta, meta.look, e.d.arc, e.d.Hc, this.app.maxAniso, e.d.T + 0.35);
     setBindingArt(e.mats.spine, e.tex.spine);
     restyleBookMaterials(e.mats, meta.look);
     this.releaseCover(e);
@@ -901,7 +901,7 @@ export class Shelf {
 }
 
 /** The spine's lettering, stamped into the binding. */
-function spineTexture(meta, look, arc, Hc, aniso) {
-  return stampedTexture(makeSpineCanvas(meta, look, arc, Hc), makeSpineCanvas(meta, look, arc, Hc, true), aniso);
+function spineTexture(meta, look, arc, Hc, aniso, faceW = arc) {
+  return stampedTexture(makeSpineCanvas(meta, look, arc, Hc, false, faceW), makeSpineCanvas(meta, look, arc, Hc, true, faceW), aniso);
 }
 

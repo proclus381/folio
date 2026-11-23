@@ -961,6 +961,9 @@ export class UI {
       `<section><span class="k">[ Paper ]</span>
          <p class="note">The paper of every book that hasn't one of its own. A book's own paper is set in its details.</p>
          <div id="pe-lib"></div></section>
+       <section><span class="k">[ Paper surface ]</span>
+         <div class="seg"><button type="button" class="mono-btn" data-psrc="sim" aria-pressed="${app.shared.paper.source === 'sim'}">Simulated</button><button type="button" class="mono-btn" data-psrc="classic" aria-pressed="${app.shared.paper.source === 'classic'}">Classic</button></div>
+         <p class="note">Simulated: each paper's fibres, formation, marks and finish made from how that paper is made, in Blender. Classic: the surfaces Folio drew before.</p></section>
        <section><span class="k">[ Wear ]</span>
          <div class="seg"><button type="button" class="mono-btn" id="st-wear" aria-pressed="${app.livingWear}">${app.livingWear ? '[ ON ]' : '[ OFF ]'}</button><span class="mono dim">Books wear as you read them</span></div>
          <p class="note">The leaves you turn pick up a little finger soil at their corners, and a book grows softer and a touch wavier the more it is read. Off, a book is as worn as its paper's Wear says.</p></section>
@@ -984,6 +987,13 @@ export class UI {
     );
     const body = this.panelBody;
     this.mountPaperEditor(body.querySelector('#pe-lib'), app.libraryPaper, (st, final) => app.setLibraryPaper(st, { final }));
+    body.querySelectorAll('[data-psrc]').forEach((b) =>
+      b.addEventListener('click', () => {
+        app.shared.paper.setSource(b.dataset.psrc);
+        body.querySelectorAll('[data-psrc]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+        app.invalidate();
+      }),
+    );
     const wear = body.querySelector('#st-wear');
     wear.addEventListener('click', () => {
       app.setLivingWear(!app.livingWear);
