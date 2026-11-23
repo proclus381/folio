@@ -964,6 +964,13 @@ export class UI {
        <section><span class="k">[ Paper surface ]</span>
          <div class="seg"><button type="button" class="mono-btn" data-psrc="sim" aria-pressed="${app.shared.paper.source === 'sim'}">Simulated</button><button type="button" class="mono-btn" data-psrc="classic" aria-pressed="${app.shared.paper.source === 'classic'}">Classic</button></div>
          <p class="note">Simulated: each paper's fibres, formation, marks and finish made from how that paper is made, in Blender. Classic: the surfaces Folio drew before.</p></section>
+       <section><span class="k">[ Turning ]</span>
+         <div class="seg"><button type="button" class="mono-btn" data-turn="peel" data-on="1" aria-pressed="${app.cornerPeel}">Peel</button><button type="button" class="mono-btn" data-turn="peel" data-on="0" aria-pressed="${!app.cornerPeel}">Classic</button><span class="mono dim">Corners</span></div>
+         <p class="note">Peel: a leaf lifts where you take hold of it. A corner peels off diagonally and the leaf rolls into a cone as it turns; held near the spine it bends softer.</p>
+         <div class="seg"><button type="button" class="mono-btn" data-turn="flop" data-on="1" aria-pressed="${app.freeLeaf}">Physical</button><button type="button" class="mono-btn" data-turn="flop" data-on="0" aria-pressed="${!app.freeLeaf}">Classic</button><span class="mono dim">Leaf in the air</span></div>
+         <p class="note">Physical: let go of a leaf and its edge flops under its own weight; it trails in the air and, as the leaf lands, whips over and slaps down. Supple paper flops more.</p>
+         <div class="seg"><button type="button" class="mono-btn" data-turn="catch" data-on="1" aria-pressed="${app.catchLeaf}">On</button><button type="button" class="mono-btn" data-turn="catch" data-on="0" aria-pressed="${!app.catchLeaf}">Off</button><span class="mono dim">Catch a leaf</span></div>
+         <p class="note">Touch a leaf in the air and it stops; hold it a moment, or move, and it is in your hand. A quick tap still turns the next page. Classic and Off are the turning Folio had.</p></section>
        <section><span class="k">[ Wear ]</span>
          <div class="seg"><button type="button" class="mono-btn" id="st-wear" aria-pressed="${app.livingWear}">${app.livingWear ? '[ ON ]' : '[ OFF ]'}</button><span class="mono dim">Books wear as you read them</span></div>
          <p class="note">The leaves you turn pick up a little finger soil at their corners, and a book grows softer and a touch wavier the more it is read. Off, a book is as worn as its paper's Wear says.</p></section>
@@ -992,6 +999,13 @@ export class UI {
         app.shared.paper.setSource(b.dataset.psrc);
         body.querySelectorAll('[data-psrc]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
         app.invalidate();
+      }),
+    );
+    const turnSet = { peel: (on) => app.setCornerPeel(on), flop: (on) => app.setFreeLeaf(on), catch: (on) => app.setCatchLeaf(on) };
+    body.querySelectorAll('[data-turn]').forEach((b) =>
+      b.addEventListener('click', () => {
+        turnSet[b.dataset.turn](b.dataset.on === '1');
+        body.querySelectorAll(`[data-turn="${b.dataset.turn}"]`).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
       }),
     );
     const wear = body.querySelector('#st-wear');

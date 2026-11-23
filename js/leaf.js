@@ -3,7 +3,10 @@
 // The sheet's cross-section is a chain hinged at the gutter. Its angle along the width blends between
 // lying on the right stack (t = 0) and lying on the left stack (t = 1), plus a bend term (tip leading or
 // trailing the turn). On top of that sits an analytic developable roll — the corner curl that follows a
-// drag — rolled about a tilted fold line through a pivot, applied outward from the stack only.
+// drag — rolled about a tilted fold line through a pivot, applied outward from the stack only. With `cone`, the
+// roll tightens toward the fold line's inner end (where the corner you hold lies, rolled into a tight tube) and
+// loosens toward where the fold leaves by the fore-edge: a leaf taken by its corner rolls into a cone, not round a
+// cylinder.
 
 import * as THREE from 'three';
 import { stackProfile } from './book3d.js';
@@ -363,6 +366,9 @@ const chainX = new Float32Array(NC + 1);
 const chainZ = new Float32Array(NC + 1);
 const chainTX = new Float32Array(NC + 1);
 const chainTZ = new Float32Array(NC + 1);
+const CURL_SWAP = 0.16; // (of the turn) over which the roll unrolls before upright and rolls up again after
+const CONE_MIN = 0.6; // how far the cone may tighten / loosen the roll's span
+const CONE_MAX = 1.8;
 let rollAlong = new Float32Array(512);
 let rollOut = new Float32Array(512);
 
@@ -405,7 +411,7 @@ export class Leaf {
     this.t = 0; // 0 resting right … 1 resting left
     this.bend = 0; // + tip leads the turn, − tip trails
     this.eps = 0.01; // layer lift above the stack
-    this.curl = { amount: 0, power: 0.86, span: 32.4, angle: 0, pivotU: 0.74, pivotV: 0.5 };
+    this.curl = { amount: 0, power: 0.86, span: 32.4, angle: 0, pivotU: 0.74, pivotV: 0.5, cone: 0 };
     this.sig = '';
   }
 
@@ -422,7 +428,8 @@ export class Leaf {
   /** Recompute the sheet. env: { Wp, Hp, tabR, tabL } */
   deform(env, force = false) {
     const c = this.curl;
-    const sig = `${this.t.toFixed(5)}|${this.bend.toFixed(4)}|${this.eps}|${c.amount.toFixed(4)}|${c.angle.toFixed(4)}|${c.pivotU}|${c.pivotV}|${env.tabR.h.toFixed(5)}|${env.tabR.o.toFixed(4)}|${env.tabL.h.toFixed(5)}`;
+    const cone = c.cone || 0;
+    const sig = `${this.t.toFixed(5)}|${this.bend.toFixed(4)}|${this.eps}|${c.amount.toFixed(4)}|${c.angle.toFixed(4)}|${c.pivotU}|${c.pivotV}|${c.span}|${cone.toFixed(3)}|${env.tabR.h.toFixed(5)}|${env.tabR.o.toFixed(4)}|${env.tabL.h.toFixed(5)}`;
     if (!force && sig === this.sig) return false;
     this.sig = sig;
     this.material.userData.u.turnLift.value = Math.sin(Math.PI * Math.min(1, Math.max(0, this.t)));
@@ -453,19 +460,27 @@ export class Leaf {
       chainTX[i] = tx / l;
       chainTZ[i] = tz / l;
     }
+    // The roll curls the edge up, away from the stack the leaf comes from or goes to, so it changes sides as the leaf
+    // passes upright. It unrolls on the way there and rolls up again past it (CURL_SWAP either side of upright),
+    // instead of jumping from one side to the other.
     const lift = t < 0.5 ? 1 : -1;
+    const swap = Math.min(1, Math.abs(t - 0.5) / CURL_SWAP);
+    const amount = c.amount * swap * swap * (3 - 2 * swap);
 
     // roll table
-    const curling = c.amount > 0.002;
+    const curling = amount > 0.002;
     let step = 1;
     let dxr = 1;
     let dyr = 0;
     let px = 0;
     let py = 0;
+    // the cone: the roll's span at a point scales with exp(−cone · η / Hp), η along the fold line toward its inner end
+    let ex = 0;
+    let ey = 0;
     if (curling) {
       step = c.span / 64;
       const maxXi = Math.hypot(Wp, Hp) + step * 2;
-      const n = Math.ceil(maxXi / step) + 2;
+      const n = Math.ceil(maxXi / (step * (cone ? CONE_MIN : 1))) + 2;
       if (rollAlong.length < n + 1) {
         rollAlong = new Float32Array(n + 1);
         rollOut = new Float32Array(n + 1);
@@ -474,7 +489,7 @@ export class Leaf {
       rollOut[0] = 0;
       for (let k = 1; k <= n; k++) {
         const sm = (k - 0.5) * step;
-        const a = Math.min(c.amount * Math.pow(sm / c.span, c.power), Math.PI);
+        const a = Math.min(amount * Math.pow(sm / c.span, c.power), Math.PI);
         rollAlong[k] = rollAlong[k - 1] + Math.cos(a) * step;
         rollOut[k] = rollOut[k - 1] + Math.sin(a) * step;
       }
@@ -482,6 +497,11 @@ export class Leaf {
       dyr = Math.sin(c.angle);
       px = c.pivotU * Wp;
       py = (c.pivotV - 0.5) * Hp;
+      if (cone) {
+        const sg = Math.sign(dyr);
+        ex = (Math.abs(dyr) * cone) / Hp;
+        ey = (-dxr * sg * cone) / Hp;
+      }
     }
 
     const P = this.pos;
@@ -496,11 +516,13 @@ export class Leaf {
         if (curling) {
           const xi = (x0 - px) * dxr + (y0 - py) * dyr;
           if (xi > 0) {
-            const f = xi / step;
+            // a span g times as long: along(ξ) = g · along₁(ξ / g), and the same for out
+            const g = cone ? Math.min(CONE_MAX, Math.max(CONE_MIN, Math.exp((x0 - px) * ex + (y0 - py) * ey))) : 1;
+            const f = xi / (step * g);
             const k0 = Math.floor(f);
             const fr = f - k0;
-            const along = rollAlong[k0] + (rollAlong[k0 + 1] - rollAlong[k0]) * fr;
-            out = rollOut[k0] + (rollOut[k0 + 1] - rollOut[k0]) * fr;
+            const along = g * (rollAlong[k0] + (rollAlong[k0 + 1] - rollAlong[k0]) * fr);
+            out = g * (rollOut[k0] + (rollOut[k0 + 1] - rollOut[k0]) * fr);
             xl = x0 + dxr * (along - xi);
             yl = y0 + dyr * (along - xi);
           }

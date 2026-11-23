@@ -29,6 +29,80 @@ const OPEN = { lift: 0.42, travelAt: 0.3, travel: 1.15, coverAt: 0.5, cover: 1.0
 const CLOSE = { swing: 0.55, travelAt: 0.22, travel: 0.8, settleAt: 0.95, settle: 0.45, gapAt: 0.35, gap: 0.9, done: 1.45 };
 const TURN_DUR = 0.82;
 
+// Corner peel (Settings ▸ Page corners ▸ Peel): where you take hold of a leaf decides how it lifts.
+//  - The fold tilts with the grab's height: square to the page at mid-height, 31.5° at a corner, and further with
+//    the drag's own direction (pulled down from a top corner it tilts more, pulled up it straightens).
+//  - Tilted, the leaf rolls into a cone: a tight tube at the corner you hold, a broad bend where the fold leaves by
+//    the fore-edge.
+//  - Pressed (or hovered with a mouse) near its fore-edge, the leaf lifts just beyond your finger, so a corner
+//    peels and the middle of the edge lifts square. Dragged, the fold glides back to where a turning leaf bends.
+//  - The point you hold stays under your finger. Held near the spine, the bend is softer (span up to ×2.2).
+const PEEL = {
+  tilt: 0.55, // rad, the fold's tilt at a corner
+  tiltMax: 0.65, // with the drag's direction added
+  turn: 0.45, // how much of the drag's direction goes into the tilt
+  depth: 2.2, // cm from the finger back to the fold, pressed
+  lift: 0.42, // rad: the farthest point of a pressed leaf lifts this far
+  hover: 0.55, // a hover lifts this much of a press
+  cone: 0.9,
+  spine: 2.2, // the span's stretch, held at the spine
+};
+const _peel = {};
+
+// A leaf in the air (Settings ▸ Turning ▸ Leaf in the air: Physical): the leaf's free edge is a damped spring riding
+// on the turning leaf. β is the edge's angle against the rigid leaf (+ toward the left stack). While a hand holds the
+// leaf (a drag, or the first 42 % of a tapped turn, where a hand lifts the corner) the edge keeps the held shape; let
+// go, it answers to the air (it trails a fast leaf), to inertia (it lags a leaf that speeds up and runs on when the
+// leaf slows: as a leaf lands its trailing edge whips over and slaps down), and to its own weight (it flops). Supple
+// paper (paper.js: flex) flops further and slower. The stacks stop it, with a little bounce.
+const TIP = {
+  w0: 21, // rad/s, the edge's own spring at flex 1
+  zeta: 0.28, // its damping ratio
+  inertia: 0.012, // how far the edge lags per rad/s² of the leaf's angular acceleration
+  drag: 0.045, // … per rad/s of its angular speed, in the air
+  grav: 0.13, // its droop when the leaf lies level
+  rest: 0.25, // restitution when it meets a stack
+  most: 0.6, // rad: the air and inertia bend the edge at most about this far (they saturate smoothly)
+  release: 0.42, // where a tapped turn's hand lets go
+};
+
+// Catch (Settings ▸ Turning ▸ Catch): a touch on a leaf in the air brakes every leaf in the air to a stop (in about
+// 0.2 s); hold still 0.2 s, or move, and the touched leaf is in your hand. A quick tap lets them fly on and does what
+// a tap does.
+const CATCH = { brake: 0.05, resume: 0.08, hold: 0.2, blend: 0.25 };
+
+/** The fold's tilt for a grab at height gv (−½ bottom … ½ top). */
+function grabTilt(gv) {
+  return PEEL.tilt * Math.sign(gv) * smoothstep(0.12, 0.5, Math.abs(gv));
+}
+
+/** How much softer the bend, held at gu (0 at the gutter, 1 at the fore-edge). */
+function spineSoft(gu) {
+  return lerp(PEEL.spine, 1, smoothstep(0.2, 0.85, gu));
+}
+
+/**
+ * The curl of a leaf pressed at (gu, gv), its fold tilted by `angle`: the fold sits PEEL.depth behind the finger,
+ * and the leaf's farthest point beyond it lifts by `lift` (rad). Written into `out`.
+ */
+function peelCurl(out, d, gu, gv, angle, lift, spanMul) {
+  const span = 32.4 * spanMul;
+  const dx = Math.cos(angle);
+  const dy = Math.sin(angle);
+  const px = Math.min(gu, 0.97) * d.Wp - PEEL.depth * dx;
+  const py = clamp(gv, -0.5, 0.5) * d.Hp - PEEL.depth * dy;
+  let far = 0.5;
+  for (const cy of [-0.5, 0.5]) far = Math.max(far, (d.Wp - px) * dx + (cy * d.Hp - py) * dy);
+  out.power = 0.86;
+  out.span = span;
+  out.angle = angle;
+  out.pivotU = px / d.Wp;
+  out.pivotV = py / d.Hp + 0.5;
+  out.amount = lift * Math.pow(span / far, 0.86);
+  out.cone = PEEL.cone * Math.min(1, Math.abs(angle) / PEEL.tilt);
+  return out;
+}
+
 const _v = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _e = new THREE.Euler();
@@ -74,7 +148,7 @@ export class Reader {
     this.panVY = { v: 0 };
     this.pointers = new Map();
     this.gesture = null;
-    this.hover = { side: 0, amount: 0, v: { v: 0 }, angle: 0, target: 0 };
+    this.hover = { side: 0, amount: 0, v: { v: 0 }, angle: 0, target: 0, gu: 0.9, gv: 0, su: 0.9, sv: 0 };
     this.parallax = { x: 0, y: 0, tx: 0, ty: 0, vx: { v: 0 }, vy: { v: 0 } };
     this.raycaster = new THREE.Raycaster();
     this.flex = 1; // how supple the open book's paper is (1: book wove)
@@ -745,14 +819,21 @@ export class Reader {
       } else if (st.rest) {
         const h = this.hover;
         const hoverSide = st.rest === 'R' ? 1 : -1;
-        leaf.curl.amount = h.side === hoverSide ? h.amount : 0;
-        leaf.curl.angle = h.angle;
-        leaf.curl.pivotU = 0.8;
-        leaf.curl.pivotV = 0.5;
-        leaf.curl.span = 32.4;
+        if (this.app.cornerPeel && h.side === hoverSide && h.amount > 0) {
+          peelCurl(leaf.curl, this.d, h.su, h.sv, grabTilt(h.sv), PEEL.lift * PEEL.hover * h.amount, spineSoft(h.su));
+          leaf.curl.cone = 0;
+        } else {
+          leaf.curl.amount = h.side === hoverSide ? h.amount : 0;
+          leaf.curl.angle = h.angle;
+          leaf.curl.pivotU = 0.8;
+          leaf.curl.pivotV = 0.5;
+          leaf.curl.span = 32.4;
+          leaf.curl.cone = 0;
+        }
         leaf.bend = 0;
       } else {
         leaf.curl.amount = 0;
+        leaf.curl.cone = 0;
         leaf.bend = 0;
       }
     }
@@ -982,7 +1063,7 @@ export class Reader {
       t: dir > 0 ? 0 : 1,
       start: this.app.clock,
       dur: TURN_DUR * (1 + 0.1 * (this.flex - 1)), // a supple leaf floats down a little longer
-      curl: { amount: 0, power: 0.86, span: 32.4, angle: -0.3, pivotU: 0.6, pivotV: 0.5 },
+      curl: { amount: 0, power: 0.86, span: 32.4, angle: -0.3, pivotU: 0.6, pivotV: 0.5, cone: 0 },
       bend: 0,
       tv: { v: 0 },
     };
@@ -1036,7 +1117,7 @@ export class Reader {
         start: time + (m > 1 ? (i * (total - flightDur - 0.06)) / (m - 1) : 0),
         dur: flightDur,
         eps: 0.02,
-        curl: { amount: 0, power: 0.86, span: 32.4, angle: -0.25, pivotU: 0.6, pivotV: 0.5 },
+        curl: { amount: 0, power: 0.86, span: 32.4, angle: -0.25, pivotU: 0.6, pivotV: 0.5, cone: 0 },
         bend: 0,
         fanTex: edge ? null : this.fanPaper[i % this.fanPaper.length],
       });
@@ -1070,9 +1151,19 @@ export class Reader {
       }
       return busy;
     }
+    const g = this.gesture;
+    if (g && g.mode === 'catch' && this.app.clock - g.clock0 >= CATCH.hold) this.grabCaught(g);
+    const physical = this.app.freeLeaf;
     for (const fl of this.flights) {
       busy = true;
+      // a caught leaf's brake (Catch): an auto turn's clock is held back, a settling leaf's time slowed
+      const sp = fl.speed ?? 1;
+      fl.speed = sp + ((fl.brake ? 0 : 1) - sp) * (1 - Math.exp(-dt / (fl.brake ? CATCH.brake : CATCH.resume)));
+      if (fl.speed > 0.999 && !fl.brake) fl.speed = 1;
+      const dts = dt * fl.speed;
+      let held = null; // the edge's held shape (null: free)
       if (fl.mode === 'auto') {
+        fl.start += dt - dts;
         const tau = clamp((now - fl.start) / fl.dur, 0, 1);
         const e = easeInOutSine(tau);
         fl.t = fl.dir > 0 ? e : 1 - e;
@@ -1082,22 +1173,178 @@ export class Reader {
         fl.curl.amount = 2.4 * this.flex * Math.pow(Math.sin(Math.PI * Math.min(1, tau * 1.5)), 0.85) * Math.pow(1 - tau, 0.7);
         fl.done = tau >= 1;
         fl.goal = fl.dir > 0 ? 1 : 0;
+        if (fl.from) this.peelHandoff(fl, tau);
+        if (tau < TIP.release) held = fl.bend;
       } else if (fl.mode === 'drag') {
         fl.t = smoothDamp(fl.t, fl.target, fl.tv, 0.07, dt);
-        const reach = smoothstep(0, this.d.Wp * 0.3, fl.dragDist || 0);
-        fl.curl.amount = 6.2 * Math.pow(this.flex, 0.7) * reach * (0.35 + 0.65 * (1 - Math.abs(2 * fl.t - 1)));
+        if (fl.peel) this.peelFlight(fl, dt);
+        else {
+          const reach = Math.max(fl.reachMin || 0, smoothstep(0, this.d.Wp * 0.3, fl.dragDist || 0));
+          fl.curl.amount = 6.2 * Math.pow(this.flex, 0.7) * reach * (0.35 + 0.65 * (1 - Math.abs(2 * fl.t - 1)));
+        }
         fl.bend = fl.dir * 0.35 * Math.sin(Math.PI * fl.t);
+        held = fl.bend;
+        if (fl.caught) {
+          // caught in the air: from its flying shape into the hand's over a quarter second
+          const c = fl.caught;
+          c.w = Math.min(1, c.w + dt / CATCH.blend);
+          const w = smoothstep(0, 1, c.w);
+          fl.curl.amount = lerp(c.amount, fl.curl.amount, w);
+          fl.bend = lerp(c.bend, fl.bend, w);
+          held = fl.bend;
+        }
         fl.done = false;
       } else if (fl.mode === 'settle') {
-        fl.t = smoothDamp(fl.t, fl.goal, fl.tv, 0.14, dt);
-        fl.curl.amount *= Math.exp(-dt * 7);
+        fl.t = smoothDamp(fl.t, fl.goal, fl.tv, 0.14, dts);
+        fl.curl.amount *= Math.exp(-dts * 7);
         fl.bend = clamp(-fl.tv.v * 0.25, -0.9, 0.9) * Math.sin(Math.PI * fl.t);
         fl.done = Math.abs(fl.t - fl.goal) < 0.0015 && fl.curl.amount < 0.02;
         if (fl.done) fl.t = fl.goal;
       }
+      if (physical) {
+        this.tipStep(fl, dt, held);
+        fl.bend = fl.tip.b;
+        if (fl.done) {
+          // landed: wait (briefly) for the edge to come to rest on the stack
+          fl.tip.over = (fl.tip.over || 0) + dt;
+          fl.done = (Math.abs(fl.tip.b) < 0.01 && Math.abs(fl.tip.bv) < 0.3) || fl.tip.over > 0.35;
+          if (!fl.done) busy = true;
+        }
+      } else if (fl.tip) fl.tip = null;
     }
     this.finishFlights(false);
     return busy;
+  }
+
+  /**
+   * The free edge (TIP): follow the hand's shape while held (`held` not null), else integrate the spring driven by the
+   * leaf's own swing, measured from its angle over the last frames.
+   */
+  tipStep(fl, dt, held) {
+    const a = Math.PI * fl.t;
+    let T = fl.tip;
+    if (!T) T = fl.tip = { b: fl.bend || 0, bv: 0, a, w: 0, al: 0, over: 0 };
+    if (dt <= 0) return;
+    const w = (a - T.a) / dt;
+    T.al += ((w - T.w) / dt - T.al) * 0.6;
+    T.a = a;
+    T.w = w;
+    if (held != null) {
+      // a hand holds it: the edge goes where the hand puts it (eased a touch, so a catch doesn't jump)
+      const b = fl.mode === 'drag' ? T.b + (held - T.b) * (1 - Math.exp(-dt / 0.05)) : held;
+      T.bv = (b - T.b) / dt;
+      T.b = b;
+      return;
+    }
+    const flex = this.flex;
+    const w0 = TIP.w0 / Math.sqrt(flex);
+    const K = w0 * w0;
+    const C = 2 * TIP.zeta * w0;
+    const fk = Math.pow(flex, 0.8);
+    const n = Math.max(1, Math.ceil(dt / (1 / 240)));
+    const h = dt / n;
+    // the air and inertia push it toward this (a sudden start doesn't fold it in two)
+    const push = TIP.most * fk * Math.tanh((TIP.inertia * T.al + TIP.drag * w) / TIP.most);
+    for (let i = 0; i < n; i++) {
+      const acc = -K * T.b - C * T.bv - K * push - K * TIP.grav * flex * Math.cos(a);
+      T.bv += acc * h;
+      T.b += T.bv * h;
+      // the stacks stop it
+      if (a + T.b < 0) {
+        T.b = -a;
+        if (T.bv < 0) T.bv = -TIP.rest * T.bv;
+      } else if (a + T.b > Math.PI) {
+        T.b = Math.PI - a;
+        if (T.bv > 0) T.bv = -TIP.rest * T.bv;
+      }
+    }
+  }
+
+  /** Pointer → the leaf in the air under it (not one about to land), or null. */
+  hitFlight(x, y) {
+    const meshes = [];
+    for (const fl of this.flights) {
+      if (fl.mode === 'drag' || Math.abs(fl.t - (fl.goal ?? (fl.dir > 0 ? 1 : 0))) < 0.03) continue;
+      const leaf = this.leafOf.get(fl.k);
+      if (leaf) meshes.push(leaf.mesh);
+    }
+    if (!meshes.length) return null;
+    this.raycaster.setFromCamera(this.ndc(x, y), this.app.camera);
+    const hit = this.raycaster.intersectObjects(meshes, false)[0];
+    if (!hit) return null;
+    const leaf = hit.object.userData.leaf;
+    return this.flights.find((f) => f.k === leaf.k) || null;
+  }
+
+  brakeAll(on) {
+    for (const fl of this.flights) fl.brake = on;
+  }
+
+  /** The caught leaf is in your hand: it becomes a drag from where it hangs, the others fly on. */
+  grabCaught(g) {
+    this.brakeAll(false);
+    const fl = g.fl;
+    const p = this.pointers.get(g.id);
+    const bp = p && this.flights.includes(fl) && !this.flights.some((f) => f.mode === 'drag') ? this.bookPoint(p.x, p.y) : null;
+    if (!bp) {
+      g.mode = 'none';
+      return;
+    }
+    const R = this.d.Wp * 0.98;
+    fl.mode = 'drag';
+    fl.speed = 1;
+    fl.reachR = R;
+    fl.offset = R * Math.cos(Math.PI * fl.t) - bp.x; // the finger holds it where it is
+    fl.x0 = bp.x;
+    fl.target = fl.t;
+    fl.tv = { v: 0 };
+    fl.dragDist = 0;
+    fl.reachMin = 1; // it was already turning: the hand's full curl, not a fresh lift
+    fl.caught = { amount: fl.curl.amount, bend: fl.bend, w: 0 };
+    fl.done = false;
+    delete fl.goal;
+    delete fl.peel;
+    delete fl.from;
+    g.mode = 'turn';
+    this.app.invalidate();
+  }
+
+  /** A held leaf's curl (corner peel): pressed, it lifts beyond your finger; dragged, it bends as a turning leaf. */
+  peelFlight(fl, dt) {
+    const P = fl.peel;
+    if (dt) P.press = smoothDamp(P.press, P.hold ? 1 : 0, P.pv, 0.07, dt);
+    // the drag's own direction, in the leaf's frame (x out from the gutter): the fold turns toward it
+    const L = Math.hypot(P.dx, P.dy);
+    if (L > 0.3) {
+      const goal = Math.atan2(-P.dy, Math.max(0.5 * L, -fl.dir * P.dx));
+      P.ang += (goal - P.ang) * (1 - Math.exp(-dt * 9));
+    }
+    const angle = clamp(grabTilt(P.gv) + PEEL.turn * P.ang * smoothstep(0.5, 3, L), -PEEL.tiltMax, PEEL.tiltMax);
+    const soft = spineSoft(P.gu);
+    const reach = smoothstep(0, this.d.Wp * 0.3, fl.dragDist || 0);
+    const c = peelCurl(_peel, this.d, P.gu, P.gv, angle, PEEL.lift * P.press, soft);
+    const drag = 6.2 * Math.pow(this.flex, 0.7) * reach * (0.35 + 0.65 * (1 - Math.abs(2 * fl.t - 1)));
+    Object.assign(fl.curl, c);
+    fl.curl.amount = lerp(c.amount, drag, reach);
+    fl.curl.pivotU = lerp(c.pivotU, 0.74, reach);
+    fl.curl.pivotV = lerp(c.pivotV, 0.5, reach);
+    // (a pressed corner just lifts; the cone comes with the turn, and eases as the leaf passes upright)
+    const prog = fl.dir > 0 ? fl.t : 1 - fl.t;
+    fl.curl.cone = c.cone * reach * (1 - 0.6 * smoothstep(0.35, 0.7, prog));
+  }
+
+  /** A tap on a pressed leaf turns it: the turn starts from the peel and keeps a corner's tilt. */
+  peelHandoff(fl, tau) {
+    const f = fl.from;
+    const w = smoothstep(0, 0.35, tau);
+    const angle = Math.abs(f.angle) > 0.2 ? f.angle : -0.3;
+    const c = fl.curl;
+    c.amount = lerp(f.amount, c.amount, w);
+    c.angle = lerp(f.angle, angle, w);
+    c.pivotU = lerp(f.pivotU, 0.6, w);
+    c.pivotV = lerp(f.pivotV, 0.5, w);
+    c.span = lerp(f.span, 32.4, w);
+    c.cone = w * PEEL.cone * Math.min(1, Math.abs(c.angle) / PEEL.tilt);
   }
 
   /** Complete finished flights in order (so stacking stays consistent). */
@@ -1184,11 +1431,17 @@ export class Reader {
     const h = this.hover;
     const prev = h.amount;
     h.amount = smoothDamp(h.amount, h.target, h.v, 0.12, dt);
+    // (the peel follows the pointer a little behind it)
+    const k = 1 - Math.exp(-dt * 14);
+    const du = (h.gu - h.su) * k;
+    const dv = (h.gv - h.sv) * k;
+    h.su += du;
+    h.sv += dv;
     if (h.amount < 0.002 && h.target === 0) {
       h.amount = 0;
       h.side = 0;
     }
-    return Math.abs(h.amount - prev) > 1e-4;
+    return Math.abs(h.amount - prev) > 1e-4 || (this.app.cornerPeel && h.amount > 0 && Math.abs(du) + Math.abs(dv) > 1e-4);
   }
 
   // =============================================================== geometry queries
@@ -1246,6 +1499,7 @@ export class Reader {
 
     if (this.pointers.size === 2) {
       // pinch: abandon whatever the first finger started
+      if (this.gesture && this.gesture.mode === 'catch') this.brakeAll(false);
       if (this.drawing) {
         this.ink.cancel();
         this.drawing = null;
@@ -1283,8 +1537,18 @@ export class Reader {
       }
     }
 
-    const hit = this.hitPage(e.clientX, e.clientY);
     const zoomed = this.zoomTarget > 1.05;
+    if (this.app.catchLeaf && this.flights.length && !zoomed && !this.fan) {
+      const fl = this.hitFlight(e.clientX, e.clientY);
+      if (fl) {
+        // a leaf in the air under your finger: everything in the air brakes
+        this.brakeAll(true);
+        this.gesture = { mode: 'catch', fl, id: e.pointerId, clock0: this.app.clock };
+        this.app.invalidate();
+        return;
+      }
+    }
+    const hit = this.hitPage(e.clientX, e.clientY);
     if (hit && hit.uvx > 0.78 && !zoomed && !this.fan) {
       // grabbed near the fore-edge: lift the leaf right away
       const dir = hit.front ? +1 : -1;
@@ -1351,6 +1615,7 @@ export class Reader {
       return;
     }
     if (!g) return;
+    if (g.mode === 'catch' && Math.hypot(e.clientX - p.x0, e.clientY - p.y0) > 8) this.grabCaught(g);
     if (g.mode === 'turn') {
       this.updateDrag(e.clientX, e.clientY);
       return;
@@ -1398,14 +1663,22 @@ export class Reader {
       if (this.pointers.size < 2) this.gesture = this.pointers.size ? { mode: 'none' } : null;
       return;
     }
+    if (g && g.mode === 'catch') {
+      // let go before it was taken: they fly on, and a quick tap still does what a tap does
+      this.brakeAll(false);
+      this.gesture = null;
+      if (e.type !== 'pointercancel' && (e.timeStamp || performance.now()) - p.t0 < this.app.tapMs) this.tap(p.x0, p.y0, p.type);
+      this.app.invalidate();
+      return;
+    }
     if (g && g.mode === 'turn') {
       const moved = Math.hypot(p.x - p.x0, p.y - p.y0);
       const fl = this.flights.find((f) => f.mode === 'drag');
-      if (fl && moved < 10 && (e.timeStamp || performance.now()) - p.t0 < this.app.tapMs && e.type !== 'pointercancel') {
-        // a tap on the fore-edge: turn the page the ordinary way
+      if (fl && !fl.caught && moved < 10 && (e.timeStamp || performance.now()) - p.t0 < this.app.tapMs && e.type !== 'pointercancel') {
+        // a tap on the fore-edge: turn the page the ordinary way (from where the peel had lifted it)
         this.flights.splice(this.flights.indexOf(fl), 1);
-        if (fl.dir > 0) this.next();
-        else this.prev();
+        const turned = fl.dir > 0 ? this.next() : this.prev();
+        if (turned && fl.peel) this.flights[this.flights.length - 1].from = { ...fl.curl };
       } else this.releaseDrag(false, p.vx);
       this.gesture = null;
       return;
@@ -1467,9 +1740,16 @@ export class Reader {
     } else {
       const hit = this.hitPage(x, y);
       if (hit && hit.uvx > 0.84) {
-        h.side = hit.front ? 1 : -1;
-        h.target = 1.5;
+        const side = hit.front ? 1 : -1;
+        if (h.side !== side || h.amount === 0) {
+          h.su = hit.uvx;
+          h.sv = hit.uvy - 0.5;
+        }
+        h.side = side;
+        h.target = this.app.cornerPeel ? 1 : 1.5;
         h.angle = clamp((hit.uvy - 0.5) * 1.1, -0.5, 0.5);
+        h.gu = hit.uvx;
+        h.gv = hit.uvy - 0.5;
       } else h.target = 0;
     }
     this.app.canvas.style.cursor = this.tool ? 'crosshair' : h.target > 0 ? 'grab' : 'default';
@@ -1502,9 +1782,20 @@ export class Reader {
       // swipes start anywhere; act as if the edge were grabbed
       offset: fromSwipe ? (dir > 0 ? Wp * 0.95 - bp.x : -Wp * 0.95 - bp.x) : 0,
       dragDist: 0,
-      curl: { amount: 0, power: 0.86, span: 32.4, angle, pivotU: 0.74, pivotV: 0.5 },
+      curl: { amount: 0, power: 0.86, span: 32.4, angle, pivotU: 0.74, pivotV: 0.5, cone: 0 },
       bend: 0,
     };
+    if (this.app.cornerPeel) {
+      // where it was taken: gu from the gutter out, gv up from the middle; pressed at the edge, it lifts at once
+      const gu = clamp((dir > 0 ? bp.x : -bp.x) / Wp, 0, 1);
+      // (a mouse's hover had already lifted it a little)
+      const h = this.hover;
+      const press = h.side === dir && !fromSwipe ? PEEL.hover * h.amount : 0;
+      fl.peel = { gu, gv: grabY / this.d.Hp, gx: bp.x, gy: bp.y, dx: 0, dy: 0, ang: 0, press, pv: { v: 0 }, hold: !fromSwipe };
+      // the point you hold stays under your finger (a swipe takes the edge, as before)
+      fl.reachR = fromSwipe ? Wp * 0.98 : Math.max(0.6, gu) * Wp * 0.98;
+      this.peelFlight(fl, 0);
+    }
     this.flights.push(fl);
     this.hover.target = 0;
     this.hover.amount = 0;
@@ -1519,8 +1810,12 @@ export class Reader {
     const bp = this.bookPoint(x, y);
     if (!bp) return;
     const xp = bp.x + fl.offset;
-    fl.target = Math.acos(clamp(xp / (this.d.Wp * 0.98), -1, 1)) / Math.PI;
+    fl.target = Math.acos(clamp(xp / (fl.reachR || this.d.Wp * 0.98), -1, 1)) / Math.PI;
     fl.dragDist = Math.abs(bp.x - fl.x0);
+    if (fl.peel) {
+      fl.peel.dx = bp.x - fl.peel.gx;
+      fl.peel.dy = bp.y - fl.peel.gy;
+    }
     this.app.invalidate();
   }
 
@@ -1533,6 +1828,7 @@ export class Reader {
     else if (fl.dir > 0) complete = (fl.t > 0.42 || flick > 450) && flick > -450;
     else complete = (fl.t < 0.58 || flick < -450) && flick < 450;
     fl.mode = 'settle';
+    if (fl.peel) fl.peel.hold = false;
     fl.goal = complete ? (fl.dir > 0 ? 1 : 0) : fl.dir > 0 ? 0 : 1;
     if (complete) this.app.lighting.gust(fl.dir, 0.55 + Math.min(0.6, Math.abs(flick) / 2500));
     // carry some of the hand's speed into the settle

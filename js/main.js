@@ -101,6 +101,10 @@ class App {
     this.livingWear = loadLivingWear(); // books wear as you read them (an option in Settings)
     this.handledCache = new WeakMap();
     this.theme = pref('theme', 'light');
+    // Settings ▸ Turning (reader.js): corner peel (PEEL), a physical leaf in the air (TIP), catching a leaf (CATCH)
+    this.cornerPeel = pref('peel', '1') === '1';
+    this.freeLeaf = pref('flop', '1') === '1';
+    this.catchLeaf = pref('catch', '1') === '1';
     this.dirty = 3;
     this.lastT = performance.now() / 1000;
     this.pending = null;
@@ -486,6 +490,24 @@ class App {
     if (!final) return;
     saveLibraryPaper(this.libraryPaper);
     this.repaper();
+  }
+
+  /** Settings ▸ Turning: corners Peel (on) or Classic. */
+  setCornerPeel(on) {
+    this.cornerPeel = !!on;
+    setPref('peel', on ? '1' : '0');
+  }
+
+  /** Settings ▸ Turning: leaf in the air Physical (on) or Classic. */
+  setFreeLeaf(on) {
+    this.freeLeaf = !!on;
+    setPref('flop', on ? '1' : '0');
+  }
+
+  /** Settings ▸ Turning: catch a leaf in the air, on or off. */
+  setCatchLeaf(on) {
+    this.catchLeaf = !!on;
+    setPref('catch', on ? '1' : '0');
   }
 
   setLivingWear(on) {
