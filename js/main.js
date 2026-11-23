@@ -107,6 +107,8 @@ class App {
     this.catchLeaf = pref('catch', '1') === '1';
     this.clumpTurns = pref('clump', '1') === '1'; // jumps turn as one block (CLUMP)
     this.riffle = pref('riffle', '1') === '1'; // the thumb on the fore-edge riffles and gathers (RIFFLE)
+    this.settleOpen = pref('settle', '1') === '1'; // leaves settle as a book opens (DROP)
+    this.paperPhysics = pref('pphys', '1') === '1'; // each paper moves as it is made (paper.js phys)
     this.dirty = 3;
     this.lastT = performance.now() / 1000;
     this.pending = null;
@@ -510,6 +512,18 @@ class App {
   setClumpTurns(on) {
     this.clumpTurns = !!on;
     setPref('clump', on ? '1' : '0');
+  }
+
+  /** Settings ▸ Turning: each paper moves as it is made (on), or all alike. */
+  setPaperPhysics(on) {
+    this.paperPhysics = !!on;
+    setPref('pphys', on ? '1' : '0');
+  }
+
+  /** Settings ▸ Turning: leaves settle as a book opens (on) or not. */
+  setSettleOpen(on) {
+    this.settleOpen = !!on;
+    setPref('settle', on ? '1' : '0');
   }
 
   /** Settings ▸ Turning: riffle and gather on the fore-edge, on or off. */

@@ -991,7 +991,11 @@ export class UI {
          <div class="seg"><button type="button" class="mono-btn" data-turn="clump" data-on="1" aria-pressed="${app.clumpTurns}">Clump</button><button type="button" class="mono-btn" data-turn="clump" data-on="0" aria-pressed="${!app.clumpTurns}">Fan</button><span class="mono dim">Several leaves</span></div>
          <p class="note">Clump: a jump of more than three leaves (a bookmark, the contents, a page number) turns as one block, bound at the spine, lifted by its top leaf. Fan: they fly one after another.</p>
          <div class="seg"><button type="button" class="mono-btn" data-turn="riffle" data-on="1" aria-pressed="${app.riffle}">On</button><button type="button" class="mono-btn" data-turn="riffle" data-on="0" aria-pressed="${!app.riffle}">Off</button><span class="mono dim">Riffle and gather</span></div>
-         <p class="note">Put a finger on a page's outer edge and slide along it: leaves flick past like a flipbook. Hold it there a moment first, then slide down: you gather a block of leaves, more the further you slide; turn it toward the spine and let go. Classic and Off are the turning Folio had.</p></section>
+         <p class="note">Put a finger on a page's outer edge and slide along it: leaves flick past like a flipbook. Hold it there a moment first, then slide down: you gather a block of leaves, more the further you slide; turn it toward the spine and let go. </p>
+         <div class="seg"><button type="button" class="mono-btn" data-turn="settle" data-on="1" aria-pressed="${app.settleOpen}">Settle</button><button type="button" class="mono-btn" data-turn="settle" data-on="0" aria-pressed="${!app.settleOpen}">Classic</button><span class="mono dim">Opening</span></div>
+         <p class="note">Settle: as a book lands open, its top leaves spring up a little from the spine and settle back onto their stacks, one after another.</p>
+         <div class="seg"><button type="button" class="mono-btn" data-turn="pphys" data-on="1" aria-pressed="${app.paperPhysics}">Own</button><button type="button" class="mono-btn" data-turn="pphys" data-on="0" aria-pressed="${!app.paperPhysics}">Classic</button><span class="mono dim">Paper</span></div>
+         <p class="note">Own: each paper moves as it is made, from its weight and stiffness. Bible paper floats down slowly and flutters, newsprint is limp, coated paper falls heavy, a card turns stiffly; a book's weight setting changes it too. Classic and Off are the turning Folio had.</p></section>
        <section><span class="k">[ Wear ]</span>
          <div class="seg"><button type="button" class="mono-btn" id="st-wear" aria-pressed="${app.livingWear}">${app.livingWear ? '[ ON ]' : '[ OFF ]'}</button><span class="mono dim">Books wear as you read them</span></div>
          <p class="note">The leaves you turn pick up a little finger soil at their corners, and a book grows softer and a touch wavier the more it is read. Off, a book is as worn as its paper's Wear says.</p></section>
@@ -1028,6 +1032,8 @@ export class UI {
       catch: (on) => app.setCatchLeaf(on),
       clump: (on) => app.setClumpTurns(on),
       riffle: (on) => app.setRiffle(on),
+      settle: (on) => app.setSettleOpen(on),
+      pphys: (on) => app.setPaperPhysics(on),
     };
     body.querySelectorAll('[data-turn]').forEach((b) =>
       b.addEventListener('click', () => {

@@ -122,6 +122,20 @@ export function resolvePaper(p, { scanTone = null, lived = 0 } = {}) {
   const stiff = T.E * Math.pow(caliper / BASE.caliper, 3);
   const wear = Math.max(s.wear, lived);
   const flex = clamp(Math.pow(stiff, -0.18), 0.5, 2.0) * (1 + 0.35 * wear); // supple leaves curl more; use softens them
+  // How the leaf moves (reader.js, Settings ▸ Turning ▸ Paper: Own), from its bending stiffness (stiff, ∝ E·t³) and
+  // its weight (gsm), both against book wove's:
+  //   sag:  weight over stiffness, cube-rooted (the elastogravity length): how far a free edge droops;
+  //   airy: lightness: how much the air holds it (floats down slower, trails further, flutters);
+  //   ring: stiffness over weight: how quickly its edge springs back.
+  // Bible: sag 2.9, airy 2.2, ring 0.54 (floats, flutters, droops); coated: 1.6, 0.7, 0.8 (heavy, falls fast);
+  // a 300 gsm card: 0.4, 0.3, 1.6 (stiff).
+  const mass = s.gsm / 80;
+  const soft = stiff / (1 + 0.6 * wear);
+  const phys = {
+    sag: clamp(Math.pow(mass / soft, 1 / 3), 0.4, 3),
+    airy: clamp(1 / mass, 0.3, 2.5),
+    ring: clamp(Math.pow(soft / mass, 0.15), 0.5, 1.6),
+  };
 
   // colour: the type's tint, moved toward white or ivory by the shade setting
   const tint = new THREE.Color(T.tint);
@@ -146,6 +160,7 @@ export function resolvePaper(p, { scanTone = null, lived = 0 } = {}) {
     calRel: caliper / BASE.caliper,
     opacity,
     flex,
+    phys,
     // the leaves' shader
     tint: toned,
     showThrough: Math.min(0.85, BASE.showThrough * Math.pow(thin, 0.6)),

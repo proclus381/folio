@@ -87,6 +87,18 @@ const clumpDur = (n) => Math.min(1.1, 0.7 + 0.045 * Math.log2(Math.max(1, n)));
 //    thumb; then turn the block toward the spine with the finger, and let go: it lands, or falls back.
 const RIFFLE = { step: 16, dur: 0.55, max: 8, arm: 0.35, gather: 14 };
 
+// Opening (Settings ▸ Turning ▸ Opening: Settle). As the book lands open at your place, the top leaves on each side
+// spring up a little from the spine, then settle back onto their stacks one after another, the deepest first
+// (50 ms apart, 0.4 s each, stripe.press's gravity drop), the fore-edge trailing on its cushion of air.
+const DROP = { n: 3, lift: [0.035, 0.025, 0.016], rise: 0.12, gap: 0.05, fall: 0.4 };
+
+// Paper (Settings ▸ Turning ▸ Paper: Own). The leaf moves as its paper is made (paper.js: phys): `sag` (weight over
+// stiffness) sets how far its free edge droops and lags, `airy` (lightness) how much the air holds it (it floats
+// down slower, trails further and, moving fast, flutters at 9–14 Hz), `ring` (stiffness over weight) how quickly
+// its edge springs back. Bible paper floats and flutters; coated paper falls heavy; a card turns stiffly.
+const PAPER_FLUTTER = 0.045; // rad of flutter per unit of lightness above 0.8, at full speed (on the edge itself)
+const NEUTRAL_PHYS = { sag: 1, airy: 1, ring: 1 };
+
 /** The fold's tilt for a grab at height gv (−½ bottom … ½ top). */
 function grabTilt(gv) {
   return PEEL.tilt * Math.sign(gv) * smoothstep(0.12, 0.5, Math.abs(gv));
@@ -575,6 +587,7 @@ export class Reader {
       }
       if (tl >= OPEN.fanAt + 0.1 && this.fanStarted && !this.fan) {
         this.phase = 'reading';
+        if (this.app.settleOpen) this.drop = { start: time };
         this.app.ui.onOpened && this.app.ui.onOpened();
       }
     } else if (this.phase === 'closing') {
@@ -625,6 +638,10 @@ export class Reader {
     // leaves in flight
     if (this.updateFlights(dt, time)) busy = true;
     if (this.updateHover(dt)) busy = true;
+    if (this.drop) {
+      if (this.flights.length || this.fan || time - this.drop.start > DROP.rise + (DROP.n - 1) * DROP.gap + DROP.fall * this.dropFall()) this.drop = null;
+      else busy = true;
+    }
 
     // stacks
     const leftCount = this.leftCount(time);
@@ -910,6 +927,7 @@ export class Reader {
       const lk = this.s - 1 - back;
       if (rk < N) need.set(rk, { t: 0, eps: 0.012, rest: 'R' });
       if (lk >= 0) need.set(lk, { t: 1, eps: 0.012, rest: 'L' });
+      if (this.drop && !this.flights.length) this.dropLeaves(need, time - this.drop.start);
       if (this.flights.length) {
         const ks = this.flights.map((f) => f.k);
         const kmin = Math.min(...ks);
@@ -986,6 +1004,7 @@ export class Reader {
     const r = this.app.paperFor(this.meta);
     this.paperRes = r;
     this.flex = r.flex;
+    this.paperPhys = r.phys;
     this.app.shared.paper.use(r.type); // the type's own fibres, formation and surface
     applyPaper(this.app.shared.paper.u, this.pool, r, this.d.Wp, this.d.Hp);
     if (this.entry) this.app.shelf.syncPaper(this.entry, r); // the page block's colour and edges too
@@ -1195,7 +1214,8 @@ export class Reader {
       mode: 'auto',
       t: dir > 0 ? 0 : 1,
       start: this.app.clock,
-      dur: TURN_DUR * (1 + 0.1 * (this.flex - 1)), // a supple leaf floats down a little longer
+      // a supple leaf floats down a little longer (Paper: Own: a light one does, a heavy one falls sooner)
+      dur: TURN_DUR * (this.phys ? clamp(1 + 0.12 * (this.phys.airy - 1), 0.88, 1.2) : 1 + 0.1 * (this.flex - 1)),
       curl: { amount: 0, power: 0.86, span: 32.4, angle: -0.3, pivotU: 0.6, pivotV: 0.5, cone: 0 },
       bend: 0,
       tv: { v: 0 },
@@ -1525,7 +1545,7 @@ export class Reader {
         }
         fl.done = false;
       } else if (fl.mode === 'settle') {
-        fl.t = smoothDamp(fl.t, fl.goal, fl.tv, 0.14, dts);
+        fl.t = smoothDamp(fl.t, fl.goal, fl.tv, this.phys ? 0.14 * clamp(Math.pow(this.phys.airy, 0.25), 0.8, 1.25) : 0.14, dts);
         fl.curl.amount *= Math.exp(-dts * 7);
         fl.bend = clamp(-fl.tv.v * 0.25, -0.9, 0.9) * Math.sin(Math.PI * fl.t);
         fl.done = Math.abs(fl.t - fl.goal) < 0.0015 && fl.curl.amount < 0.02;
@@ -1533,7 +1553,7 @@ export class Reader {
       }
       if (physical) {
         this.tipStep(fl, dt, held);
-        fl.bend = fl.tip.b;
+        fl.bend = fl.tip.b + (fl.tip.fl || 0);
         if (fl.done) {
           // landed: wait (briefly) for the edge to come to rest on the stack
           fl.tip.over = (fl.tip.over || 0) + dt;
@@ -1567,16 +1587,33 @@ export class Reader {
       return;
     }
     const flex = this.flex;
-    const w0 = TIP.w0 / Math.sqrt(flex);
+    const ph = this.phys;
+    let w0;
+    let push;
+    let droop;
+    T.fl = 0;
+    if (ph) {
+      // the paper's own: its stiffness against its weight springs it back; its weight against its stiffness
+      // droops and lags it; its lightness gives the air a hold on it, and moving fast it flutters
+      w0 = TIP.w0 * ph.ring;
+      const most = TIP.most * clamp(Math.pow(ph.sag, 0.5), 0.6, 1.7);
+      push = most * Math.tanh((TIP.inertia * Math.pow(ph.sag, 0.5) * T.al + TIP.drag * Math.pow(ph.airy, 0.6) * w) / most);
+      droop = TIP.grav * ph.sag;
+      if (T.ph == null) T.ph = Math.random() * 6.283;
+      const tt = this.app.clock;
+      // (a quiver far above the edge's own spring: it goes straight onto the edge, not through the spring)
+      T.fl = PAPER_FLUTTER * Math.max(0, ph.airy - 0.8) * Math.min(1, Math.abs(w) / 6) * (Math.sin(58.4 * tt + T.ph) + 0.6 * Math.sin(88.6 * tt + 1.7 * T.ph));
+    } else {
+      w0 = TIP.w0 / Math.sqrt(flex);
+      push = TIP.most * Math.pow(flex, 0.8) * Math.tanh((TIP.inertia * T.al + TIP.drag * w) / TIP.most);
+      droop = TIP.grav * flex;
+    }
     const K = w0 * w0;
     const C = 2 * TIP.zeta * w0;
-    const fk = Math.pow(flex, 0.8);
     const n = Math.max(1, Math.ceil(dt / (1 / 240)));
     const h = dt / n;
-    // the air and inertia push it toward this (a sudden start doesn't fold it in two)
-    const push = TIP.most * fk * Math.tanh((TIP.inertia * T.al + TIP.drag * w) / TIP.most);
     for (let i = 0; i < n; i++) {
-      const acc = -K * T.b - C * T.bv - K * push - K * TIP.grav * flex * Math.cos(a);
+      const acc = -K * T.b - C * T.bv - K * push - K * droop * Math.cos(a);
       T.bv += acc * h;
       T.b += T.bv * h;
       // the stacks stop it
@@ -1637,6 +1674,33 @@ export class Reader {
     delete fl.from;
     g.mode = 'turn';
     this.app.invalidate();
+  }
+
+  /** The paper's own physics (Settings ▸ Turning ▸ Paper: Own), or null for the classic. */
+  get phys() {
+    return this.app.paperPhysics ? this.paperPhys || NEUTRAL_PHYS : null;
+  }
+
+  /** How long the opening's leaves take to settle, by their paper's lightness. */
+  dropFall() {
+    return this.phys ? clamp(Math.pow(this.phys.airy, 0.4), 0.75, 1.4) : 1;
+  }
+
+  /** The top leaves of both stacks as they spring up and settle (DROP), `x` seconds after the book landed open. */
+  dropLeaves(need, x) {
+    const N = this.d.leaves;
+    for (let j = 0; j < DROP.n; j++) {
+      const rise = easeOutCubic(clamp(x / DROP.rise, 0, 1));
+      const u = clamp((x - DROP.rise - (DROP.n - 1 - j) * DROP.gap) / (DROP.fall * this.dropFall()), 0, 1);
+      const lift = DROP.lift[j] * Math.pow(this.flex, 0.3) * rise * (1 - smoothstep(0, 1, u));
+      const trail = 0.14 * (DROP.lift[j] / DROP.lift[0]) * Math.sin(Math.PI * u) * Math.pow(this.flex, 0.8);
+      const eps = 0.012 + (DROP.n - 1 - j) * 0.004; // the top leaf stays on top
+      const curl = { amount: 0, power: 0.86, span: 32.4, angle: 0, pivotU: 0.74, pivotV: 0.5, cone: 0 };
+      const r = this.s + j;
+      const l = this.s - 1 - j;
+      if (r < N) need.set(r, { t: lift, eps, bend: trail, curl: { ...curl } });
+      if (l >= 0) need.set(l, { t: 1 - lift, eps, bend: -trail, curl: { ...curl } });
+    }
   }
 
   /** A held leaf's curl (corner peel): pressed, it lifts beyond your finger; dragged, it bends as a turning leaf. */
