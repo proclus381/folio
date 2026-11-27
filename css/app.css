@@ -1367,3 +1367,65 @@ body[data-mode='reading'][data-chrome='hidden'] .bottom *,
 body[data-mode='reading'][data-chrome='hidden'] #readerbar * {
   pointer-events: none;
 }
+
+/* ---------------------------------------------------------------- the index: select several, delete */
+.index-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.index-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.index-tools .icon-btn b,
+.confirm-row b {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 400;
+  margin-left: 2px;
+}
+.index-tools [data-act='delete'] {
+  display: inline-flex;
+  align-items: center;
+  width: auto;
+  padding: 0 4px;
+}
+.index-tools .icon-btn[aria-pressed='true'] {
+  color: var(--accent, currentColor);
+  opacity: 1;
+}
+.confirm-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 6px 0;
+}
+.confirm-row svg {
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+}
+.list li button .tick {
+  display: none;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  opacity: 0.5;
+}
+.index.selecting .list li button .tick {
+  display: inline-block;
+}
+.index.selecting .list li.picked button .tick {
+  opacity: 1;
+  background: currentColor;
+  box-shadow: inset 0 0 0 2px var(--bg);
+}
+.list li button .ti {
+  flex: 1;
+}

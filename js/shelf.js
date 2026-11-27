@@ -27,6 +27,13 @@ const FRONT_Z = SHELF_Z + FACE_PULL + 0.55; // the plank's front edge, just in f
 const BACK_Z = SHELF_Z - 14.2;
 const LABEL_H = 0.92;
 
+// Only the books near where a row stands are built (their model, materials and spine): BUILD_NEAR either side,
+// nearest first, a few a frame; built ones further than BUILD_FAR are let go. Every title keeps a cheap entry (its
+// size and its place on the shelf), so a library of hundreds costs what fifty do.
+const BUILD_NEAR = 14;
+const BUILD_FAR = 22;
+const BUILD_PER_FRAME = 2;
+
 function newRow(src = {}) {
   return { key: 'all', label: '', shelfId: null, entries: [], sections: null, editableSections: false, p: 0, pTarget: 0, pv: { v: 0 }, selected: -1, deco: null, ...src };
 }
@@ -184,25 +191,68 @@ export class Shelf {
     if (sel) this.onSelect && this.onSelect(sel, this.selected);
   }
 
+  /** A title on the shelf: its size and place; the book itself is built when it comes near (buildModel). */
   buildEntry(meta) {
-    const app = this.app;
-    const pr = app.paperFor(meta);
+    const pr = this.app.paperFor(meta);
     const d = bookDims(meta.pages, meta.aspect, pr.calRel);
-    const look = meta.look;
-    const arc = d.arc;
-    const tex = { spine: spineTexture(meta, look, arc, d.Hc, app.maxAniso, d.T + 0.35) };
-    const mats = makeBookMaterials(look, tex, app.shared, d, pr); // the cover shows plain binding until its art exists
-    const model = new BookModel(d, mats, { withLeftStack: false });
-    model.set(Math.PI, 0, 0);
     const slot = new THREE.Group();
     slot.scale.setScalar(S);
-    model.group.position.copy(d.center).multiplyScalar(-1);
-    slot.add(model.group);
     this.group.add(slot);
-    const e = { meta, d, look, tex, mats, model, slot, yaw: Math.PI / 2, yawV: { v: 0 }, coverState: 'none', x: 0, z: SHELF_Z, row: 0, off: null, marks: null, paperEdge: pr.edge };
-    for (const m of model.pickables()) m.userData.entry = e;
+    return { meta, d, look: meta.look, tex: null, mats: null, model: null, slot, yaw: Math.PI / 2, yawV: { v: 0 }, coverState: 'none', x: 0, z: SHELF_Z, row: 0, off: null, marks: null, paperEdge: pr.edge };
+  }
+
+  /** Build a title's book: its spine art, materials and model (the cover shows plain binding until its art exists). */
+  buildModel(e) {
+    if (e.model) return;
+    const app = this.app;
+    const pr = app.paperFor(e.meta);
+    e.tex = { spine: spineTexture(e.meta, e.look, e.d.arc, e.d.Hc, app.maxAniso, e.d.T + 0.35) };
+    e.mats = makeBookMaterials(e.look, e.tex, app.shared, e.d, pr);
+    e.model = new BookModel(e.d, e.mats, { withLeftStack: false });
+    e.model.set(Math.PI, 0, 0);
+    e.model.group.position.copy(e.d.center).multiplyScalar(-1);
+    e.slot.add(e.model.group);
+    for (const m of e.model.pickables()) m.userData.entry = e;
+    e.marks = null;
     this.syncMarkers(e);
-    return e;
+    app.invalidate();
+  }
+
+  /** Let a far book go: back to a cheap entry. */
+  dropModel(e) {
+    if (!e.model) return;
+    this.clearMarkers(e);
+    e.slot.remove(e.model.group);
+    e.model.dispose();
+    for (const k of ['cover', 'back', 'cloth', 'endpaper', 'spine', 'headband']) if (e.mats[k]) e.mats[k].dispose(); // (the headband's texture is shared, cached by colour)
+    if (e.mats.ownBlock) {
+      e.mats.paper.dispose();
+      e.mats.edge.dispose();
+    }
+    e.tex.spine.dispose();
+    if (e.coverTex) e.coverTex.dispose();
+    e.coverTex = null;
+    e.coverState = 'none';
+    e.model = e.mats = e.tex = null;
+  }
+
+  /** Build the books near where each visible row stands, nearest first; let the far ones go. Returns whether any changed. */
+  manageBuilt() {
+    const keep = new Set([this.app.reader.entry, this.hiddenEntry, this.lift && this.lift.entry].filter(Boolean));
+    const want = [];
+    for (let ri = 0; ri < this.rows.length; ri++) {
+      const row = this.rows[ri];
+      const near = Math.abs(ri - this.r) <= 1 ? (ri === this.r ? BUILD_NEAR : BUILD_NEAR / 2) : -1;
+      row.entries.forEach((e, i) => {
+        const dist = Math.abs(i - row.p) + (ri === this.r ? 0 : 4);
+        if (keep.has(e) || dist <= near) {
+          if (!e.model) want.push({ e, dist: keep.has(e) ? -1 : dist });
+        } else if (e.model && (near < 0 || dist > BUILD_FAR)) this.dropModel(e);
+      });
+    }
+    want.sort((a, b) => a.dist - b.dist);
+    for (const w of want.slice(0, BUILD_PER_FRAME)) this.buildModel(w.e);
+    return want.length > 0;
   }
 
   buildGhosts() {
@@ -246,16 +296,8 @@ export class Shelf {
   }
 
   disposeEntry(e) {
-    this.clearMarkers(e);
+    this.dropModel(e);
     this.group.remove(e.slot);
-    e.model.dispose();
-    for (const k of ['cover', 'back', 'cloth', 'endpaper', 'spine', 'headband']) if (e.mats[k]) e.mats[k].dispose(); // (the headband's texture is shared, cached by colour)
-    if (e.mats.ownBlock) {
-      e.mats.paper.dispose();
-      e.mats.edge.dispose();
-    }
-    e.tex.spine.dispose();
-    if (e.coverTex) e.coverTex.dispose();
   }
 
   /** Re-render the generated textures of one book (after title/look edits). */
@@ -264,6 +306,7 @@ export class Shelf {
     if (!e) return;
     e.meta = meta;
     e.look = meta.look;
+    if (!e.model) return; // (built with the new look when it comes near)
     e.tex.spine.dispose();
     e.tex.spine = spineTexture(meta, meta.look, e.d.arc, e.d.Hc, this.app.maxAniso, e.d.T + 0.35);
     setBindingArt(e.mats.spine, e.tex.spine);
@@ -275,7 +318,7 @@ export class Shelf {
 
   /** A book's page block in its paper's colours (toning and soil change them without a new model). */
   syncPaper(e, pr = this.app.paperFor(e.meta)) {
-    if (!e.mats.ownBlock) return;
+    if (!e.mats || !e.mats.ownBlock) return;
     e.mats.paper.color.copy(pr.block);
     if (pr.edge !== 'gilt') e.mats.edge.color.copy(pr.edgeColor);
     this.app.invalidate();
@@ -284,6 +327,7 @@ export class Shelf {
   // ------------------------------------------------------------------ flags
   /** A book's flags (the spreads you bookmarked, sticking out of the top). Rebuilt only when they change. */
   syncMarkers(e) {
+    if (!e.model) return; // (its flags come with it, when it's built)
     const flags = flagsOf(e.meta);
     const sig = `${e.liftedFlag || ''}|${flags.map((f) => f.key + f.u.toFixed(3)).join(',')}`;
     if (e.marks && e.marks.sig === sig) return;
@@ -302,7 +346,7 @@ export class Shelf {
   clearMarkers(e) {
     const k = e.marks;
     if (!k) return;
-    if (k.flagMesh) {
+    if (k.flagMesh && e.model) {
       e.model.group.remove(k.flagMesh);
       k.flagMesh.geometry.dispose();
     }
@@ -318,7 +362,7 @@ export class Shelf {
 
   /** The flags of the face-out book on screen: [{ flag, box }]. */
   flagBoxes(e = this.entries[this.selected]) {
-    if (!e || !e.marks || !e.marks.items.length || !e.slot.visible || Math.abs(e.yaw) > 0.15) return [];
+    if (!e || !e.model || !e.marks || !e.marks.items.length || !e.slot.visible || Math.abs(e.yaw) > 0.15) return [];
     const app = this.app;
     e.model.group.updateWorldMatrix(true, false);
     const mw = new THREE.Matrix4();
@@ -397,9 +441,10 @@ export class Shelf {
   // ------------------------------------------------------------------ covers (lazy)
   ensureCover(e) {
     if (e.coverState !== 'none') return;
+    this.buildModel(e);
     e.coverState = 'loading';
     const finish = (color, mask = null) => {
-      if (e.coverState !== 'loading') return;
+      if (e.coverState !== 'loading' || !e.mats) return;
       e.coverTex = stampedTexture(color, mask, this.app.maxAniso);
       setBindingArt(e.mats.cover, e.coverTex);
       e.mats.cover.color.set(0xffffff);
@@ -426,8 +471,10 @@ export class Shelf {
   releaseCover(e) {
     if (e.coverTex) e.coverTex.dispose();
     e.coverTex = null;
-    setBindingArt(e.mats.cover, null);
-    e.mats.cover.color.set(e.look.cloth);
+    if (e.mats) {
+      setBindingArt(e.mats.cover, null);
+      e.mats.cover.color.set(e.look.cloth);
+    }
     e.coverState = 'none';
   }
 
@@ -679,6 +726,7 @@ export class Shelf {
       moving = true;
     }
     for (let ri = 0; ri < this.rows.length; ri++) if (this.updateRow(this.rows[ri], ri, dt)) moving = true;
+    if (this.manageBuilt()) moving = true;
     // arranged books glide in from where they stood
     for (const e of this.all.values())
       if (e.off) {
@@ -858,7 +906,7 @@ export class Shelf {
     this.raycaster.setFromCamera(ndc, this.app.camera);
     const objs = [];
     for (const row of this.rows) {
-      for (const e of row.entries) if (e.slot.visible) objs.push(...e.model.pickables());
+      for (const e of row.entries) if (e.slot.visible && e.model) objs.push(...e.model.pickables());
       if (row.deco) {
         for (const l of row.deco.labels) if (l.visible) objs.push(l);
         if (row.deco.plate && row.deco.plate.visible) objs.push(row.deco.plate);
@@ -877,7 +925,7 @@ export class Shelf {
 
   /** Screen-space rectangle of the selected book's front cover. */
   coverRect(e) {
-    if (!e) return null;
+    if (!e || !e.model) return null;
     const d = e.d;
     const pts = [];
     const v = new THREE.Vector3();

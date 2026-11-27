@@ -23,6 +23,16 @@ function fmtDate(t) {
   return new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+// Small line icons (20 × 20, currentColor), for controls that need no words.
+const svg = (d) => `<svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const ICON = {
+  ticks: svg('<path d="M3 5.5l1.5 1.5L7 4.5M3 10.5l1.5 1.5L7 9.5M3 15.5l1.5 1.5L7 14.5M10 6h7M10 11h7M10 16h7"/>'),
+  all: svg('<rect x="3" y="3" width="14" height="14" rx="1.5"/><path d="M6.5 10l2.5 2.5 4.5-5"/>'),
+  bin: svg('<path d="M4 5.5h12M8 5.5V4h4v1.5M5.5 5.5l.8 11h7.4l.8-11M8.5 8.5v5M11.5 8.5v5"/>'),
+  yes: svg('<path d="M4 10.5l4 4 8-9"/>'),
+  no: svg('<path d="M5 5l10 10M15 5L5 15"/>'),
+};
+
 export class UI {
   constructor(app) {
     this.app = app;
@@ -133,15 +143,6 @@ export class UI {
   }
 
   // ------------------------------------------------------------------ metrics for the reading layout
-  readTop() {
-    const m = this.track.getBoundingClientRect();
-    return Math.max(70, m.top + m.height * 0.42);
-  }
-  readBottom() {
-    const bar = $('readerbar').getBoundingClientRect();
-    return Math.max(80, window.innerHeight - bar.top + 10);
-  }
-
   // ------------------------------------------------------------------ the title row
   // Every title of the shelf in a row that glides with it, the selected one upright and dark, the others
   // italic and grey. While a book is open the row steps back (CSS, body[data-mode='reading']): the neighbours
@@ -237,7 +238,7 @@ export class UI {
     this.pokeChrome();
   }
 
-  // ------------------------------------------------------------------ the bars over a book (Reading view: Full)
+  // ------------------------------------------------------------------ the bars over a book
   // While a book fills the screen, the top bar, the title row, the reader bar and the footer float over it and fade
   // after a few seconds of reading. They come back for a tap in the middle of the page, a touch at the top or bottom
   // edge, the mouse near either, or a key; they stay while a panel, a menu or a tool is open, the mouse is on them,
@@ -255,13 +256,13 @@ export class UI {
   pokeChrome(ms = 3200) {
     this.setChrome(true);
     clearTimeout(this.chromeT);
-    if (this.app.fullView && this.body.dataset.mode === 'reading') this.chromeT = setTimeout(() => this.restChrome(), ms);
+    if (this.body.dataset.mode === 'reading') this.chromeT = setTimeout(() => this.restChrome(), ms);
   }
 
   /** Let the bars fade now, unless something holds them. */
   restChrome() {
     clearTimeout(this.chromeT);
-    if (!this.app.fullView || this.body.dataset.mode !== 'reading') return this.setChrome(true);
+    if (this.body.dataset.mode !== 'reading') return this.setChrome(true);
     if (this.chromeHeld()) {
       this.chromeT = setTimeout(() => this.restChrome(), 1200);
       return;
@@ -292,7 +293,7 @@ export class UI {
       });
       el.addEventListener('pointerleave', () => {
         this.chromeHover = false;
-        if (this.app.fullView && this.body.dataset.mode === 'reading') this.pokeChrome(1800);
+        if (this.body.dataset.mode === 'reading') this.pokeChrome(1800);
       });
     }
   }
@@ -1023,27 +1024,6 @@ export class UI {
       `<section><span class="k">[ Paper ]</span>
          <p class="note">The paper of every book that hasn't one of its own. A book's own paper is set in its details.</p>
          <div id="pe-lib"></div></section>
-       <section><span class="k">[ Paper surface ]</span>
-         <div class="seg"><button type="button" class="mono-btn" data-psrc="sim" aria-pressed="${app.shared.paper.source === 'sim'}">Simulated</button><button type="button" class="mono-btn" data-psrc="classic" aria-pressed="${app.shared.paper.source === 'classic'}">Classic</button></div>
-         <p class="note">Simulated: each paper's fibres, formation, marks and finish made from how that paper is made, in Blender. Classic: the surfaces Folio drew before.</p></section>
-       <section><span class="k">[ Reading view ]</span>
-         <div class="seg"><button type="button" class="mono-btn" data-view="full" aria-pressed="${app.fullView}">Full</button><button type="button" class="mono-btn" data-view="framed" aria-pressed="${!app.fullView}">Framed</button></div>
-         <p class="note">Full: an open book fills the screen and reads alone (the shelf is hidden, which also makes reading lighter work for the iPad); the bars float over it and fade while you read. Tap the middle of the page, or touch the top or bottom edge, to bring them back. Framed: the book between the bars with the shelf beside it, as before.</p></section>
-       <section><span class="k">[ Turning ]</span>
-         <div class="seg"><button type="button" class="mono-btn" data-turn="peel" data-on="1" aria-pressed="${app.cornerPeel}">Peel</button><button type="button" class="mono-btn" data-turn="peel" data-on="0" aria-pressed="${!app.cornerPeel}">Classic</button><span class="mono dim">Corners</span></div>
-         <p class="note">Peel: a leaf lifts where you take hold of it. A corner peels off diagonally and the leaf rolls into a cone as it turns; held near the spine it bends softer.</p>
-         <div class="seg"><button type="button" class="mono-btn" data-turn="flop" data-on="1" aria-pressed="${app.freeLeaf}">Physical</button><button type="button" class="mono-btn" data-turn="flop" data-on="0" aria-pressed="${!app.freeLeaf}">Classic</button><span class="mono dim">Leaf in the air</span></div>
-         <p class="note">Physical: let go of a leaf and its edge flops under its own weight; it trails in the air and, as the leaf lands, whips over and slaps down. Supple paper flops more.</p>
-         <div class="seg"><button type="button" class="mono-btn" data-turn="catch" data-on="1" aria-pressed="${app.catchLeaf}">On</button><button type="button" class="mono-btn" data-turn="catch" data-on="0" aria-pressed="${!app.catchLeaf}">Off</button><span class="mono dim">Catch a leaf</span></div>
-         <p class="note">Touch a leaf in the air and it stops; hold it a moment, or pull it back, and it is in your hand. A swipe on with it, or a quick tap, still turns the next page.</p>
-         <div class="seg"><button type="button" class="mono-btn" data-turn="clump" data-on="1" aria-pressed="${app.clumpTurns}">Clump</button><button type="button" class="mono-btn" data-turn="clump" data-on="0" aria-pressed="${!app.clumpTurns}">Fan</button><span class="mono dim">Several leaves</span></div>
-         <p class="note">Clump: a jump of more than three leaves (a bookmark, the contents, a page number) turns as one block, bound at the spine, lifted by its top leaf. Fan: they fly one after another.</p>
-         <div class="seg"><button type="button" class="mono-btn" data-turn="riffle" data-on="1" aria-pressed="${app.riffle}">On</button><button type="button" class="mono-btn" data-turn="riffle" data-on="0" aria-pressed="${!app.riffle}">Off</button><span class="mono dim">Riffle and gather</span></div>
-         <p class="note">Put a finger on a page's outer edge and slide along it: leaves flick past like a flipbook. Hold it there a moment first, then slide down: you gather a block of leaves, more the further you slide; turn it toward the spine and let go. </p>
-         <div class="seg"><button type="button" class="mono-btn" data-turn="settle" data-on="1" aria-pressed="${app.settleOpen}">Settle</button><button type="button" class="mono-btn" data-turn="settle" data-on="0" aria-pressed="${!app.settleOpen}">Classic</button><span class="mono dim">Opening</span></div>
-         <p class="note">Settle: as a book lands open, its top leaves spring up a little from the spine and settle back onto their stacks, one after another.</p>
-         <div class="seg"><button type="button" class="mono-btn" data-turn="pphys" data-on="1" aria-pressed="${app.paperPhysics}">Own</button><button type="button" class="mono-btn" data-turn="pphys" data-on="0" aria-pressed="${!app.paperPhysics}">Classic</button><span class="mono dim">Paper</span></div>
-         <p class="note">Own: each paper moves as it is made, from its weight and stiffness. Bible paper floats down slowly and flutters, newsprint is limp, coated paper falls heavy, a card turns stiffly; a book's weight setting changes it too. Classic and Off are the turning Folio had.</p></section>
        <section><span class="k">[ Wear ]</span>
          <div class="seg"><button type="button" class="mono-btn" id="st-wear" aria-pressed="${app.livingWear}">${app.livingWear ? '[ ON ]' : '[ OFF ]'}</button><span class="mono dim">Books wear as you read them</span></div>
          <p class="note">The leaves you turn pick up a little finger soil at their corners, and a book grows softer and a touch wavier the more it is read. Off, a book is as worn as its paper's Wear says.</p></section>
@@ -1067,34 +1047,6 @@ export class UI {
     );
     const body = this.panelBody;
     this.mountPaperEditor(body.querySelector('#pe-lib'), app.libraryPaper, (st, final) => app.setLibraryPaper(st, { final }));
-    body.querySelectorAll('[data-psrc]').forEach((b) =>
-      b.addEventListener('click', () => {
-        app.shared.paper.setSource(b.dataset.psrc);
-        body.querySelectorAll('[data-psrc]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-        app.invalidate();
-      }),
-    );
-    body.querySelectorAll('[data-view]').forEach((b) =>
-      b.addEventListener('click', () => {
-        app.setFullView(b.dataset.view === 'full');
-        body.querySelectorAll('[data-view]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-      }),
-    );
-    const turnSet = {
-      peel: (on) => app.setCornerPeel(on),
-      flop: (on) => app.setFreeLeaf(on),
-      catch: (on) => app.setCatchLeaf(on),
-      clump: (on) => app.setClumpTurns(on),
-      riffle: (on) => app.setRiffle(on),
-      settle: (on) => app.setSettleOpen(on),
-      pphys: (on) => app.setPaperPhysics(on),
-    };
-    body.querySelectorAll('[data-turn]').forEach((b) =>
-      b.addEventListener('click', () => {
-        turnSet[b.dataset.turn](b.dataset.on === '1');
-        body.querySelectorAll(`[data-turn="${b.dataset.turn}"]`).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-      }),
-    );
     const wear = body.querySelector('#st-wear');
     wear.addEventListener('click', () => {
       app.setLivingWear(!app.livingWear);
@@ -1187,6 +1139,10 @@ export class UI {
     sync();
   }
 
+  /**
+   * The library index: every book, tap one to go to it. Select mode (the ticks icon) picks several to delete at once:
+   * tap books to tick them (or tick them all), the bin deletes them, after a ✓.
+   */
   openIndex() {
     const app = this.app;
     const metas = app.sortedMetas();
@@ -1194,16 +1150,61 @@ export class UI {
     const items = metas
       .map((m) => {
         const pct = m.pages ? Math.round(((m.spread || 0) * 2 * 100) / m.pages) : 0;
-        return `<li class="${cur && cur.id === m.id ? 'sel' : ''}"><button type="button" data-id="${esc(m.id)}"><span>${esc(m.title)}${m.author ? ` <span class="dim">— ${esc(m.author)}</span>` : ''}</span><span class="pg">${Math.min(100, pct)}%</span></button></li>`;
+        return `<li class="${cur && cur.id === m.id ? 'sel' : ''}"><button type="button" data-id="${esc(m.id)}"><i class="tick" aria-hidden="true"></i><span class="ti">${esc(m.title)}${m.author ? ` <span class="dim">— ${esc(m.author)}</span>` : ''}</span><span class="pg">${Math.min(100, pct)}%</span></button></li>`;
       })
       .join('');
     this.openPanel(
       'index',
       '[ LIBRARY INDEX ]',
-      `<section><span class="k">${metas.length} ${metas.length === 1 ? 'book' : 'books'} on the shelf</span><ul class="list">${items || '<li class="note">Nothing here yet.</li>'}</ul></section>`,
+      `<section class="index"><div class="index-head"><span class="k">${metas.length} ${metas.length === 1 ? 'book' : 'books'}</span>
+         <span class="index-tools">
+           <button type="button" class="icon-btn" data-act="all" aria-label="Tick all" hidden>${ICON.all}</button>
+           <button type="button" class="icon-btn" data-act="delete" aria-label="Delete the ticked books" hidden>${ICON.bin}<b class="count"></b></button>
+           <button type="button" class="icon-btn" data-act="select" aria-label="Select books" aria-pressed="false">${ICON.ticks}</button>
+         </span></div>
+         <div class="confirm-row" id="bulk-confirm" hidden><span class="mono"><b class="count"></b> ${ICON.bin}</span><button type="button" class="icon-btn" data-act="yes" aria-label="Delete them">${ICON.yes}</button><button type="button" class="icon-btn" data-act="no" aria-label="Keep them">${ICON.no}</button></div>
+         <ul class="list">${items || '<li class="note">Nothing here yet.</li>'}</ul></section>`,
     );
-    this.panelBody.querySelectorAll('button[data-id]').forEach((b) =>
+    const body = this.panelBody;
+    const sec = body.querySelector('.index');
+    const picked = new Set();
+    const act = (a) => body.querySelector(`[data-act="${a}"]`);
+    const sync = () => {
+      const on = sec.classList.contains('selecting');
+      act('select').setAttribute('aria-pressed', String(on));
+      act('all').hidden = !on;
+      act('delete').hidden = !on || !picked.size;
+      body.querySelectorAll('.count').forEach((c) => (c.textContent = picked.size || ''));
+      body.querySelectorAll('button[data-id]').forEach((b) => b.parentElement.classList.toggle('picked', picked.has(b.dataset.id)));
+      if (!picked.size) body.querySelector('#bulk-confirm').hidden = true;
+    };
+    act('select').addEventListener('click', () => {
+      sec.classList.toggle('selecting');
+      if (!sec.classList.contains('selecting')) picked.clear();
+      sync();
+    });
+    act('all').addEventListener('click', () => {
+      const every = picked.size === metas.length;
+      picked.clear();
+      if (!every) for (const m of metas) picked.add(m.id);
+      sync();
+    });
+    act('delete').addEventListener('click', () => (body.querySelector('#bulk-confirm').hidden = false));
+    act('no').addEventListener('click', () => (body.querySelector('#bulk-confirm').hidden = true));
+    act('yes').addEventListener('click', () => {
+      const gone = metas.filter((m) => picked.has(m.id));
+      this.closePanel();
+      app.removeBooks(gone);
+    });
+    body.querySelectorAll('button[data-id]').forEach((b) =>
       b.addEventListener('click', () => {
+        if (sec.classList.contains('selecting')) {
+          const id = b.dataset.id;
+          if (picked.has(id)) picked.delete(id);
+          else picked.add(id);
+          sync();
+          return;
+        }
         this.closePanel();
         if (app.reader.isOpen) app.openBookById(b.dataset.id);
         else app.selectBook(b.dataset.id);

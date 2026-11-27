@@ -1,12 +1,12 @@
 // The room the books reflect: a reading room modelled and rendered in Blender (tools/blender/room.py), seen
-// from where a book lies, blurred for five roughnesses and packed into one image (assets/room/room.png):
+// from where a book lies, blurred for five roughnesses and packed into one image (assets/room/room.webp):
 //   five equirectangular levels stacked top to bottom, roughness 0.2, 0.35, 0.5, 0.7, 0.9; each 256 × 128,
 //   u round the horizon from behind the book (−z) through +x, v from straight up to straight down;
 //   brightness stored as 1 − exp(−L / 2), so the window and the lamp keep their punch in 8 bits.
 // Glossy surfaces look it up with `folioRoomEnv(direction in world space, roughness)`. Until it has loaded
 // (or if it can't), a drawn stand-in answers: a bright ceiling, a darker floor, a window up to the left.
 //
-// Each reading light has its own room (tools/blender/room_lights.py → assets/room/room-<light>.png, packed the
+// Each reading light has its own room (tools/blender/room_lights.py → assets/room/room-<light>.webp, packed the
 // same way): the room at night with that lamp, candle or fire lit where the app puts it, or by sun or rain. It is
 // scaled to the mood's own brightness, so the lighting manager blends the day room (dimmed, as before) into it as
 // the light comes on (`setRoomLight`), mirrored when the light stands on its other side.
@@ -71,7 +71,7 @@ export function onRoomLoaded(fn) {
 
 let started = false;
 /** Load the room once. */
-export function loadRoom(url = 'assets/room/room.png') {
+export function loadRoom(url = 'assets/room/room.webp') {
   if (started) return;
   started = true;
   const img = new Image();
@@ -114,7 +114,7 @@ export function setRoomLight(id, mix, flip = 1) {
     lightRooms.set(id, 'loading');
     const img = new Image();
     img.decoding = 'async';
-    img.src = `assets/room/room-${id}.png`;
+    img.src = `assets/room/room-${id}.webp`;
     img
       .decode()
       .then(() => {

@@ -10,10 +10,7 @@ export const smoothstep = (a, b, x) => {
 
 export const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 export const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
-export const easeInCubic = (t) => t * t * t;
 export const easeInOutSine = (t) => -(Math.cos(Math.PI * t) - 1) / 2;
-export const easeOutQuart = (t) => 1 - Math.pow(1 - t, 4);
-export const easeInOutQuart = (t) => (t < 0.5 ? 8 * t * t * t * t : 1 - Math.pow(-2 * t + 2, 4) / 2);
 
 /** Window of a timeline: returns eased 0..1 progress of `time` inside [start, start+dur]. */
 export function seg(time, start, dur, ease = (x) => x) {
@@ -39,13 +36,6 @@ export function smoothDamp(current, target, state, smoothTime, dt) {
     state.v = 0;
   }
   return out;
-}
-
-/** Shortest-path angle lerp. */
-export function lerpAngle(a, b, t) {
-  let d = ((b - a + Math.PI) % (Math.PI * 2)) - Math.PI;
-  if (d < -Math.PI) d += Math.PI * 2;
-  return a + d * t;
 }
 
 /** Deterministic hash → [0,1). */

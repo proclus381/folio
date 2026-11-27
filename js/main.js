@@ -101,15 +101,6 @@ class App {
     this.livingWear = loadLivingWear(); // books wear as you read them (an option in Settings)
     this.handledCache = new WeakMap();
     this.theme = pref('theme', 'light');
-    // Settings ▸ Turning (reader.js): corner peel (PEEL), a physical leaf in the air (TIP), catching a leaf (CATCH)
-    this.cornerPeel = pref('peel', '1') === '1';
-    this.freeLeaf = pref('flop', '1') === '1';
-    this.catchLeaf = pref('catch', '1') === '1';
-    this.clumpTurns = pref('clump', '1') === '1'; // jumps turn as one block (CLUMP)
-    this.riffle = pref('riffle', '1') === '1'; // the thumb on the fore-edge riffles and gathers (RIFFLE)
-    this.settleOpen = pref('settle', '1') === '1'; // leaves settle as a book opens (DROP)
-    this.paperPhysics = pref('pphys', '1') === '1'; // each paper moves as it is made (paper.js phys)
-    this.fullView = pref('view', 'full') === 'full'; // Settings ▸ Reading view: the book fills the screen (reader.js FULL)
     this.dirty = 3;
     this.lastT = performance.now() / 1000;
     this.pending = null;
@@ -215,8 +206,7 @@ class App {
     const paper = makeDeferredPaperTextures();
     paper.marks = makeMarksTexture(); // foxing, soil, a deckled edge (paper.js)
     paper.onReady = () => this.invalidate();
-    // the library's paper first; a book's own type is made when it is chosen (onSelect)
-    setTimeout(() => paper.use(resolvePaper(this.libraryPaper).type), 1500);
+    // (a paper's maps load when a book opens, or once you rest on a book on the shelf: onSelect)
     paper.repeat = new THREE.Vector2(1.5, 2.25);
     onBindingMapsLoaded(() => this.invalidate()); // the cloth baked in Blender has arrived
     onRoomLoaded(() => this.invalidate()); // and the room the books reflect
@@ -288,6 +278,7 @@ class App {
 
   invalidate() {
     this.dirty = Math.max(this.dirty, 2);
+    this.shadowsStale = true;
   }
 
   // ================================================================= library
@@ -497,61 +488,6 @@ class App {
     this.repaper();
   }
 
-  /** Settings ▸ Turning: corners Peel (on) or Classic. */
-  setCornerPeel(on) {
-    this.cornerPeel = !!on;
-    setPref('peel', on ? '1' : '0');
-  }
-
-  /** Settings ▸ Turning: leaf in the air Physical (on) or Classic. */
-  setFreeLeaf(on) {
-    this.freeLeaf = !!on;
-    setPref('flop', on ? '1' : '0');
-  }
-
-  /** Settings ▸ Turning: jumps turn as a clump (on) or fan (off). */
-  setClumpTurns(on) {
-    this.clumpTurns = !!on;
-    setPref('clump', on ? '1' : '0');
-  }
-
-  /** Settings ▸ Reading view: Full (the book fills the screen, reads alone) or Framed. */
-  setFullView(on) {
-    this.fullView = !!on;
-    setPref('view', on ? 'full' : 'framed');
-    const r = this.reader;
-    if (r.isOpen && r.phase === 'reading') {
-      r.showShelf(!this.fullView);
-      this.shelf.openGapWidth = r.computeGapWidth();
-    }
-    this.ui.pokeChrome();
-    this.invalidate();
-  }
-
-  /** Settings ▸ Turning: each paper moves as it is made (on), or all alike. */
-  setPaperPhysics(on) {
-    this.paperPhysics = !!on;
-    setPref('pphys', on ? '1' : '0');
-  }
-
-  /** Settings ▸ Turning: leaves settle as a book opens (on) or not. */
-  setSettleOpen(on) {
-    this.settleOpen = !!on;
-    setPref('settle', on ? '1' : '0');
-  }
-
-  /** Settings ▸ Turning: riffle and gather on the fore-edge, on or off. */
-  setRiffle(on) {
-    this.riffle = !!on;
-    setPref('riffle', on ? '1' : '0');
-  }
-
-  /** Settings ▸ Turning: catch a leaf in the air, on or off. */
-  setCatchLeaf(on) {
-    this.catchLeaf = !!on;
-    setPref('catch', on ? '1' : '0');
-  }
-
   setLivingWear(on) {
     this.livingWear = !!on;
     saveLivingWear(this.livingWear);
@@ -715,8 +651,11 @@ class App {
 
   onSelect(entry) {
     if (this.peek && this.peek.where === 'shelf' && this.peek.entry !== entry) this.clearPeek();
-    // its paper's maps, ready by the time it opens
-    this.shared.paper.prepare(this.paperFor(entry.meta).type);
+    // its paper's maps, ready by the time it opens: once you've rested on it a moment (not for every book scrolled
+    // past, nor at launch)
+    clearTimeout(this.paperPrepT);
+    const type = this.paperFor(entry.meta).type;
+    this.paperPrepT = setTimeout(() => this.shared.paper.prepare(type), 2500);
     this.ui.setNow(entry.meta);
     if (this.theme === 'color') this.ui.setTheme('color', entry.look);
   }
@@ -778,6 +717,12 @@ class App {
       this.removeBook(meta);
       return;
     }
+    if (this.pending && this.pending.removeMany) {
+      const metas = this.pending.removeMany;
+      this.pending = null;
+      this.removeBooks(metas);
+      return;
+    }
     if (this.libraryDirty) {
       // books were added or the order changed while reading
       this.libraryDirty = false;
@@ -825,7 +770,7 @@ class App {
       if (e) {
         e.meta = meta;
         e.look = meta.look;
-        restyleBookMaterials(e.mats, meta.look);
+        if (e.mats) restyleBookMaterials(e.mats, meta.look);
       }
       await store.putBook(meta);
     }
@@ -844,6 +789,21 @@ class App {
     const next = row[idx + 1] || row[idx - 1];
     await this.loadLibrary(next && next.meta.id !== meta.id ? next.meta.id : null);
     this.ui.toast('Removed from the shelf');
+  }
+
+  /** Delete several books at once (the index's select mode): the open one closes first; the library reloads once. */
+  async removeBooks(metas) {
+    if (!metas.length) return;
+    const ids = new Set(metas.map((m) => m.id));
+    if (this.reader.isOpen && ids.has(this.reader.meta.id)) {
+      this.pending = { removeMany: metas };
+      this.reader.close();
+      return;
+    }
+    for (const m of metas) await store.deleteBook(m.id);
+    const cur = this.currentMeta();
+    await this.loadLibrary(cur && !ids.has(cur.id) ? cur.id : null);
+    this.ui.toast(metas.length === 1 ? 'Removed from the shelf' : `${metas.length} books removed`);
   }
 
   async exportBook(meta) {
@@ -1107,7 +1067,7 @@ class App {
   }
 
   onPointerDown(e) {
-    if (this.fullView && this.reader.isOpen && this.ui.chromeHidden && (e.clientY < 70 || e.clientY > this.height - 90)) {
+    if (this.reader.isOpen && this.ui.chromeHidden && (e.clientY < 70 || e.clientY > this.height - 90)) {
       this.ui.pokeChrome(); // a touch at the top or bottom edge brings the bars back
       return;
     }
@@ -1151,7 +1111,7 @@ class App {
   }
 
   onPointerMove(e) {
-    if (this.fullView && this.reader.isOpen && e.pointerType === 'mouse' && !e.buttons && (e.clientY < 80 || e.clientY > this.height - 110)) this.ui.pokeChrome();
+    if (this.reader.isOpen && e.pointerType === 'mouse' && !e.buttons && (e.clientY < 80 || e.clientY > this.height - 110)) this.ui.pokeChrome();
     if (this.magnifier.enabled && this.reader.isOpen) {
       if (this.lens && this.lens.id === e.pointerId) {
         this.magnifier.point(e.clientX, e.clientY - 70, this.width, this.height);
@@ -1303,7 +1263,7 @@ class App {
   onKey(e) {
     const tag = (e.target && e.target.tagName) || '';
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-    if (this.fullView && this.reader.isOpen && !['ArrowLeft', 'ArrowRight', ' ', 'PageUp', 'PageDown'].includes(e.key)) this.ui.pokeChrome();
+    if (this.reader.isOpen && !['ArrowLeft', 'ArrowRight', ' ', 'PageUp', 'PageDown'].includes(e.key)) this.ui.pokeChrome();
     if (e.key === 'Escape' && !document.getElementById('add-menu').hidden) {
       this.ui.toggleAddMenu(false);
       return;
@@ -1423,6 +1383,7 @@ class App {
     let busy = false;
     if (this.shelf.update(dt)) busy = true;
     if (this.reader.update(dt, this.clock)) busy = true;
+    if (busy) this.shadowsStale = true; // the shelf or the book moved: what casts shadows has moved
     if (this.magnifier.enabled && this.magnifier.update(dt)) busy = true;
     const lightFps = this.lighting.update(dt, this.camera);
     if (this.lighting.candleLit && t - (this.lightUiT || 0) > 0.5) {
@@ -1461,6 +1422,7 @@ class App {
       this.key.shadow.radius += (wantRadius - this.key.shadow.radius) * Math.min(1, dt * 4);
       if (Math.abs(this.key.shadow.radius - wantRadius) < 0.05) this.key.shadow.radius = wantRadius;
       busy = true;
+      this.shadowsStale = true;
     }
 
     if (busy) this.dirty = Math.max(this.dirty, 2);
@@ -1470,11 +1432,33 @@ class App {
     if (this.dirty > 0) {
       this.lastRenderT = t;
       this.dirty--;
+      this.refreshShadows(t);
       if (this.magnifier.enabled && this.reader.isOpen) this.magnifier.render(this.renderer, this.scene, cam);
       else this.renderer.render(this.scene, cam);
     }
   }
 }
+
+/**
+ * Shadow maps are drawn (and, VSM, blurred twice) per light; most frames don't need them redrawn. A light alone
+ * (a flame's flicker, a window's leaves) changes only colour and brightness, so its frames reuse the shadows. They
+ * are redrawn when something that casts them moves (the shelf, the book, a leaf: `shadowsStale`), when a light
+ * moves (each light on its own), every frame while a light comes on or goes out (a candle rising into place), and
+ * twice a second during a sitting (a candle burning down).
+ */
+App.prototype.refreshShadows = function (t) {
+  const all = this.shadowsStale || this.lighting.shaping || t - (this.shadowT || 0) > 0.5;
+  if (all) this.shadowT = t;
+  this.shadowsStale = false;
+  for (const l of [this.key, ...this.lighting.shadowLights()]) {
+    l.shadow.autoUpdate = false;
+    const p = l.position;
+    const q = l.target ? l.target.position : p;
+    const sig = `${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)},${q.x.toFixed(3)},${q.y.toFixed(3)},${q.z.toFixed(3)},${l.shadow.radius.toFixed(2)}`;
+    if (all || sig !== l.userData.shadowSig) l.shadow.needsUpdate = true;
+    l.userData.shadowSig = sig;
+  }
+};
 
 const app = new App();
 window.folio = app;
@@ -1485,6 +1469,12 @@ app.init().catch((err) => {
 
 // Offline support. Service workers need a secure context (https:// or localhost); add ?dev to the URL
 // while editing the app so a cached copy never shadows your changes.
-if ('serviceWorker' in navigator && window.isSecureContext && !new URLSearchParams(location.search).has('dev')) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  if (!new URLSearchParams(location.search).has('dev')) navigator.serviceWorker.register('sw.js').catch(() => {});
+  else
+    // ?dev: let go of a worker registered on an earlier visit, so its cache can't serve old files
+    navigator.serviceWorker
+      .getRegistrations()
+      .then((regs) => regs.forEach((r) => r.unregister()))
+      .catch(() => {});
 }

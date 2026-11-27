@@ -614,5 +614,4 @@ totalEmissiveRadiance += uGlowColor * uGlow * (exp(-waxDepth / 0.55) * 1.2 + exp
   }
 }
 
-export const CANDLE_DIM = DIM;
 export { BILLBOARD_VERT, FLAME_FRAG, GLOW_FRAG, SMOKE_VERT, SMOKE_FRAG, OVER, ADDITIVE };

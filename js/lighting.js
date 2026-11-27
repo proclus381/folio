@@ -428,8 +428,20 @@ export class Lighting {
       for (const s of Object.values(this.sources)) if (s.active) s.place(L);
     } else this.fresh = true; // the next light lit starts where it belongs, no glide
     for (const s of Object.values(this.sources)) if (s.update(dt, camera)) fps = Math.max(fps, s.fps);
+    // a light coming on or going out moves what casts shadows (a candle rising into place); steady, it doesn't
+    this.shaping = Object.values(this.sources).some((s) => s.active && s.state !== 'on' && s.state !== 'lit');
     this.apply(camera);
     return fps;
+  }
+
+  /** The reading lights that cast shadows (main.js keeps their shadow maps only as fresh as they need to be). */
+  shadowLights() {
+    const out = [];
+    for (const s of Object.values(this.sources)) {
+      if (!s.active) continue;
+      for (const l of [s.spot, s.sun]) if (l && l.castShadow) out.push(l);
+    }
+    return out;
   }
 
   /** Mix the room's lights and the CSS layers toward the active sources. */

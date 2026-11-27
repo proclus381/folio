@@ -46,11 +46,6 @@ export function luminance(hex) {
   });
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
-export function mixHex(a, b, t) {
-  const A = hexToRgb(a);
-  const B = hexToRgb(b);
-  return rgbToHex(A.map((v, i) => v + (B[i] - v) * t));
-}
 function hexToHsl(hex) {
   let [r, g, b] = hexToRgb(hex).map((v) => v / 255);
   const max = Math.max(r, g, b);
@@ -233,578 +228,6 @@ function* slopeSteps(h, N, gain) {
 }
 
 /**
- * Book paper the way it looks under a reading light: smooth, with only a faint, uneven life in it. Like a
- * photographed sheet stretched over the page (rather than a small tile of "tooth"), one large tileable map
- * covers most of a page, so nothing repeats in view:
- *   normal — slopes (R, G) + height (B) of the surface: fine fibre streaks lying along the grain (vertical),
- *            stronger in some patches than others, over a gentle cloudiness. Tile ≈ 9 cm of paper.
- *   fibre  — R: albedo (a percent or two of formation and fibre), G: formation density, which also decides
- *            how much light and show-through pass. Tile ≈ 18 cm, larger than the page. B: fine grain, read
- *            at its own scale (≈8 texels/mm, about a screen pixel at reading distance).
- *   cockle — the slow waviness a printed sheet takes on: a few soft swells per page.
- */
-export function makePaperTextures() {
-  const steps = paperTextureSteps();
-  let it = steps.next();
-  while (!it.done) it = steps.next();
-  return it.value;
-}
-
-/** Sample a smooth tileable field on a coarse grid once, then read it back bilinearly (cheap at 1024²). */
-function coarseField(G, fn) {
-  const g = new Float32Array(G * G);
-  for (let y = 0; y < G; y++) for (let x = 0; x < G; x++) g[y * G + x] = fn(x / G, y / G);
-  return (u, v) => {
-    const fx = u * G;
-    const fy = v * G;
-    const x0 = Math.floor(fx);
-    const y0 = Math.floor(fy);
-    const tx = fx - x0;
-    const ty = fy - y0;
-    const a = (i, j) => g[(((j % G) + G) % G) * G + (((i % G) + G) % G)];
-    const top = a(x0, y0) + (a(x0 + 1, y0) - a(x0, y0)) * tx;
-    const bot = a(x0, y0 + 1) + (a(x0 + 1, y0 + 1) - a(x0, y0 + 1)) * tx;
-    return top + (bot - top) * ty;
-  };
-}
-
-/**
- * How each paper type is made, as the generator sees it (see docs/ANALYSIS.md §17). One map tile is ≈ 9 cm of
- * paper, so a pixel is ≈ 0.09 mm: a hardwood fibre (≈ 1 mm) is ≈ 11 px long, a softwood fibre (2.5–3.5 mm)
- * ≈ 30–40, a beaten cotton fibre several times that; fibres are ≈ 20 µm wide, so they show as fine streaks.
- * Every value missing from a recipe is Folio's own book wove (and book wove takes exactly the code path and random
- * sequence it always had, so its maps are the same to the bit).
- *   streak, streakA/B, grainScale  the fine streaky surface along the grain (perlin, anisotropic)
- *   patch, cloud                   how unevenly the streaks show; the soft cloud under them
- *   fibres, len, lenPow, spread,   single surface fibres: how many, how long (px), how they lie (radians of
- *   bend, fibreRelief                 scatter around the machine direction; π: every which way), how curly, how raised
- *   form, formAlbedo, formScale    formation: how cloudy the sheet is (in light through it, and a little on it),
- *                                     and how large its flocs are (< 1: larger, as with long fibres)
- *   specks                         dark specks
- *   felt                           the hills and valleys a felt (or a felt-marking roll) leaves
- *   fines                          granular fines between short fibres (groundwood)
- *   shives, flecks                 dark bundles of unpulped wood; tiny ink specks from recycled fibre
- *   calender                       peaks pressed flat (calendering)
- *   peel                           a coating's fine "orange peel" of pigment
- */
-export const PAPER_RECIPES = { wove: {} }; // Folio's own paper: every value is RECIPE_BASE; other types: PAPER_STRUCTURES
-const RECIPE_BASE = {
-  streak: 1, streakA: [320, 72], streakB: [160, 40], grainScale: [256, 224], patch: 1, cloud: 1,
-  fibres: 1800, len: [6, 36], lenPow: 2, spread: 0.7, bend: 0.25, fibreRelief: 0.3,
-  form: 1, formAlbedo: 1, formScale: 1, specks: 14, gain: 3.2,
-  felt: 0, fines: 0, shives: 0, flecks: 0, calender: 0, peel: 0,
-};
-
-/** The paper maps for a type, made a slice at a time (a generator: yields between slices, returns the textures). */
-export function* paperTextureSteps(type = 'wove') {
-  if (type !== 'wove' && PAPER_STRUCTURES[type]) return yield* structureSteps(type);
-  const R = { ...RECIPE_BASE, ...(PAPER_RECIPES[type] || {}) };
-  const r = rng(0.2718);
-  // the extras draw from their own sequence, so the rest of each sheet stays as it was
-  const x = rng(0.913 + (hash01(type) || 0) * 0.05);
-
-  // ---- surface: streaks along the grain, patchy, on soft cloud
-  const N = 1024;
-  const h = new Float32Array(N * N);
-  {
-    const streakA = perlinTile(R.streakA[0], R.streakA[1], r); // ≈3 px across × 14 px along: short fine fibres
-    const streakB = perlinTile(R.streakB[0], R.streakB[1], r);
-    const grain = perlinTile(R.grainScale[0], R.grainScale[1], r); // a fine, even mottle between them
-    const pa = perlinTile(5, 4, r);
-    const pb = perlinTile(11, 9, r);
-    const ca = perlinTile(9, 7, r);
-    const cb = perlinTile(19, 15, r);
-    // where the fibres show more, and the cloud under them: smooth, so a coarse grid is plenty
-    const patch = coarseField(128, (u, v) => Math.min(1, Math.max(0, 0.45 + (pa(u, v) * 0.8 + pb(u, v) * 0.4) * 1.1 * R.patch)));
-    const cloud = coarseField(128, (u, v) => ca(u, v) * 0.5 + cb(u, v) * 0.25);
-    yield;
-    for (let y = 0; y < N; y++) {
-      for (let xx = 0; xx < N; xx++) {
-        const u = xx / N;
-        const v = y / N;
-        const streak = (streakA(u, v) * 0.55 + streakB(u, v) * 0.3 + grain(u, v) * 0.35) * R.streak;
-        h[y * N + xx] = streak * (0.35 + 0.65 * patch(u, v)) + cloud(u, v) * R.cloud;
-      }
-      if ((y & 31) === 31) yield;
-    }
-    // a scatter of single fibres, mostly along the grain, raised or sunk a hair
-    if (R.fibres > 0) {
-      const fc = makeCanvas(N, N);
-      const fctx = fc.getContext('2d', { willReadFrequently: true });
-      fctx.fillStyle = 'rgb(128,128,128)';
-      fctx.fillRect(0, 0, N, N);
-      fctx.lineCap = 'round';
-      for (let i = 0; i < R.fibres; i++) {
-        const ang = Math.PI / 2 + (r() - 0.5) * R.spread;
-        const len = R.len[0] + Math.pow(r(), R.lenPow) * (R.len[1] - R.len[0]);
-        const cx0 = r() * N;
-        const cy0 = r() * N;
-        const dx = Math.cos(ang) * len * 0.5;
-        const dy = Math.sin(ang) * len * 0.5;
-        const bend = (r() - 0.5) * len * R.bend;
-        fctx.strokeStyle = r() < 0.55 ? `rgba(255,255,255,${0.12 + r() * 0.2})` : `rgba(0,0,0,${0.1 + r() * 0.16})`;
-        fctx.lineWidth = 0.8 + r() * 0.9;
-        for (const ox of [-N, 0, N])
-          for (const oy of [-N, 0, N]) {
-            const cx = cx0 + ox;
-            const cy = cy0 + oy;
-            if (cx < -len || cx > N + len || cy < -len || cy > N + len) continue;
-            fctx.beginPath();
-            fctx.moveTo(cx - dx, cy - dy);
-            fctx.quadraticCurveTo(cx - Math.sin(ang) * bend, cy + Math.cos(ang) * bend, cx + dx, cy + dy);
-            fctx.stroke();
-          }
-      }
-      yield;
-      const fd = fctx.getImageData(0, 0, N, N).data;
-      for (let i = 0; i < N * N; i++) h[i] += ((fd[i * 4] - 128) / 128) * R.fibreRelief;
-      yield;
-    }
-    // ---- what only some papers have
-    if (R.felt || R.fines || R.peel) {
-      const warpA = perlinTile(12, 12, x);
-      const warpB = perlinTile(13, 11, x);
-      const feltA = R.felt ? perlinTile(58, 52, x) : null; // hills and valleys ≈ 1.5 mm
-      const feltB = R.felt ? perlinTile(122, 110, x) : null;
-      const fines = R.fines ? perlinTile(420, 380, x) : null;
-      const peelA = R.peel ? perlinTile(110, 110, x) : null;
-      const peelB = R.peel ? perlinTile(240, 240, x) : null;
-      const TAU = Math.PI * 2;
-      for (let y = 0; y < N; y++) {
-        for (let xx = 0; xx < N; xx++) {
-          const u = xx / N;
-          const v = y / N;
-          let add = 0;
-          if (R.felt) {
-            // a felt's irregular hills and valleys, with only a faint memory of its weave (two crossing sets of
-            // ridges ≈ 2 mm apart, strongly warped)
-            const w1 = warpA(u, v) * 1.6;
-            const w2 = warpB(u, v) * 1.6;
-            const twill = 0.5 * (Math.sin(TAU * (46 * u + 22 * v) + w1 * 6) + Math.sin(TAU * (-21 * u + 47 * v) + w2 * 6));
-            add += R.felt * (feltA(u, v) * 0.9 + feltB(u, v) * 0.45 + twill * 0.12);
-          }
-          if (fines) add += fines(u, v) * R.fines;
-          if (peelA) add += (peelA(u, v) * 0.7 + peelB(u, v) * 0.3) * R.peel * 4;
-          h[y * N + xx] += add;
-        }
-        if ((y & 63) === 63) yield;
-      }
-    }
-    if (R.shives) {
-      // dark bundles of wood that never came apart: 1–5 mm long, a few fibres wide, raised
-      for (let i = 0; i < R.shives; i++) {
-        const ang = Math.PI / 2 + (x() - 0.5) * 1.0;
-        const len = 12 + x() * 40;
-        const wid = 1.2 + x() * 1.8;
-        const cx = x() * N;
-        const cy = x() * N;
-        for (let t = -len / 2; t <= len / 2; t += 0.5)
-          for (let w = -wid; w <= wid; w += 0.5) {
-            const px = Math.round(cx + Math.cos(ang) * t - Math.sin(ang) * w);
-            const py = Math.round(cy + Math.sin(ang) * t + Math.cos(ang) * w);
-            const k = (1 - Math.abs(w) / (wid + 0.5)) * (1 - Math.pow(Math.abs(t) / (len / 2 + 1), 4));
-            h[(((py % N) + N) % N) * N + (((px % N) + N) % N)] += 0.18 * k;
-          }
-      }
-      yield;
-    }
-    if (R.calender) {
-      // the calender presses the peaks flat
-      let mean = 0;
-      for (let i = 0; i < N * N; i++) mean += h[i];
-      mean /= N * N;
-      for (let i = 0; i < N * N; i++) if (h[i] > mean) h[i] = mean + (h[i] - mean) * (1 - 0.7 * R.calender);
-      yield;
-    }
-  }
-
-  // ---- albedo + formation (its own, larger tile)
-  const M = 512;
-  const fibre = makeCanvas(M, M);
-  {
-    const ctx = fibre.getContext('2d');
-    const fs = (n) => Math.max(1, Math.round(n * R.formScale));
-    const form = [
-      [perlinTile(fs(4), fs(3), r), 0.5],
-      [perlinTile(fs(9), fs(7), r), 0.32],
-      [perlinTile(fs(20), fs(16), r), 0.18],
-    ];
-    const img = ctx.createImageData(M, M);
-    const rn = rng(0.577); // the fine grain's own sequence, so the rest of the sheet stays as it was
-    for (let y = 0; y < M; y++)
-      for (let xx = 0; xx < M; xx++) {
-        const u = xx / M;
-        const v = y / M;
-        let f = 0;
-        for (const [fn, w] of form) f += fn(u, v) * w;
-        // the surface map repeats twice across this one: its streaks tint the albedo a touch
-        const sh = h[((y * 2) % N) * N + ((xx * 2) % N)];
-        const i = (y * M + xx) * 4;
-        img.data[i] = clamp((0.5 + f * 0.09 * R.formAlbedo + sh * 0.025) * 255, 0, 255);
-        img.data[i + 1] = clamp((0.5 + f * 0.9 * R.form) * 255, 0, 255);
-        img.data[i + 2] = ((rn() + rn()) / 2) * 255; // B: fine grain, sampled at its own, smaller scale
-        img.data[i + 3] = 255;
-        if (xx === M - 1 && (y & 63) === 63) yield;
-      }
-    if (R.shives || R.flecks) {
-      // in colour too: shives darker and denser, recycled ink a few tiny dark specks (the surface tile repeats
-      // twice across this one, so the shives are drawn at half size into both copies' place)
-      const dark = (px, py, k) => {
-        const i = ((((py % M) + M) % M) * M + (((px % M) + M) % M)) * 4;
-        img.data[i] = clamp(img.data[i] - k * 255, 0, 255);
-        img.data[i + 1] = clamp(img.data[i + 1] + k * 120, 0, 255);
-      };
-      const xs = rng(0.3313);
-      for (let i = 0; i < R.shives * 2; i++) {
-        // soft, slender, tapering splinters, not scratches
-        const ang = Math.PI / 2 + (xs() - 0.5) * 1.0;
-        const len = 6 + xs() * 20;
-        const cx = xs() * M;
-        const cy = xs() * M;
-        const k = 0.05 + xs() * 0.07;
-        for (let t = -len / 2; t <= len / 2; t += 0.5) {
-          const taper = 1 - Math.pow((2 * t) / len, 2);
-          const px = cx + Math.cos(ang) * t;
-          const py = cy + Math.sin(ang) * t;
-          dark(Math.round(px), Math.round(py), k * taper);
-          dark(Math.round(px - Math.sin(ang)), Math.round(py + Math.cos(ang)), k * taper * 0.45);
-        }
-      }
-      for (let i = 0; i < R.flecks; i++) {
-        const cx = Math.round(xs() * M);
-        const cy = Math.round(xs() * M);
-        const k = 0.12 + xs() * 0.22;
-        dark(cx, cy, k);
-        if (xs() < 0.3) dark(cx + 1, cy, k * 0.6);
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-    // a few specks
-    for (let i = 0; i < R.specks; i++) {
-      const sx = r() * M;
-      const sy = r() * M;
-      const rad = 0.5 + Math.pow(r(), 2) * 1.1;
-      ctx.fillStyle = `rgba(0,0,0,${0.08 + r() * 0.14})`;
-      ctx.beginPath();
-      ctx.ellipse(sx, sy, rad, rad * (0.6 + r() * 0.6), r() * Math.PI, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  // ---- cockle: a few soft swells
-  const CN = 128;
-  const cockle = new Float32Array(CN * CN);
-  {
-    const oct = [
-      [perlinTile(2, 3, r), 0.6],
-      [perlinTile(4, 5, r), 0.3],
-      [perlinTile(7, 9, r), 0.12],
-    ];
-    for (let y = 0; y < CN; y++)
-      for (let xx = 0; xx < CN; xx++) {
-        let s = 0;
-        for (const [f, w] of oct) s += f(xx / CN, y / CN) * w;
-        cockle[y * CN + xx] = s;
-      }
-  }
-
-  yield;
-  const surf = yield* slopeSteps(h, N, R.gain);
-  const surfTex = canvasTexture(surf, { srgb: false, repeat: [1, 1] });
-  const fibreTex = canvasTexture(fibre, { srgb: false, repeat: [1, 1] });
-  const cockleTex = canvasTexture(slopeCanvas(cockle, CN, 28), { srgb: false, repeat: [1, 1] });
-  return { normal: surfTex, fibre: fibreTex, cockle: cockleTex };
-}
-
-// ------------------------------------------------------------------ paper structures (every type but book wove)
-/**
- * Each paper's surface built the way that paper is made, so the types differ in structure, not just in strength.
- * Heights are in arbitrary units; the slope map is then normalised to book wove's slope strength, so the shader's
- * relief (paper.js: toothK) alone says how bumpy a paper is. Pixel ≈ 0.09 mm.
- *   h        surface layers: noise [[cellsX, cellsY, amplitude]…], fibres {…}, felt, clumps, shives, calender
- *   form     formation (look-through): strength, floc scale, its share in the colour
- *   marks    colour marks: specks, shives, ink flecks
- */
-const PAPER_STRUCTURES = {
-  // calendered woodfree offset: a dense felt of short hardwood fibres, pressed nearly flat; no cloud to speak of
-  // its visible pattern: the forming wire's mark, a fine twill of dimples where the fabric's knuckles pressed
-  // (≈ 0.35 mm apart, running in diagonals), under the short fibres
-  bright: {
-    noise: [[600, 600, 0.12], [300, 280, 0.08], [9, 7, 0.06]],
-    wire: { pitch: 4, shed: 5, step: 2, depth: 0.38 },
-    fibres: { count: 4200, len: [3, 11], lenPow: 1.6, spread: 0.9, bend: 0.12, width: [0.5, 0.8], relief: 0.16 },
-    calender: 0.6,
-    form: { k: 0.6, scale: 1.5, albedo: 0.6 },
-    specks: 4,
-  },
-  // Bible / India: thinner and finer still, filled and calendered hard: almost glass, a faint fibrous satin
-  // its visible pattern: thin paper's small, frequent ripples (its cockle, finer than other papers') over a
-  // satin of fine fibres
-  bible: {
-    noise: [[700, 700, 0.12], [340, 320, 0.07], [30, 26, 0.18], [62, 54, 0.08]],
-    fibres: { count: 6500, len: [2, 8], lenPow: 1.5, spread: 0.9, bend: 0.08, width: [0.4, 0.7], relief: 0.16 },
-    calender: 0.8,
-    cockleScale: 3,
-    form: { k: 0.85, scale: 1.4, albedo: 0.7 },
-    specks: 2,
-  },
-  // coated: no fibres at all, a pigment layer's fine "orange peel" over the slow waves of the base sheet; its
-  // visible pattern is as much in the gloss (glossier on the peaks, see paper.js glossMottle) as in the relief
-  coated: {
-    noise: [[110, 110, 0.3], [240, 240, 0.15], [5, 4, 0.35], [12, 10, 0.12]],
-    form: { k: 0.35, scale: 1, albedo: 0.2 },
-    specks: 0,
-  },
-  // antique: uncalendered, the felt's hills and valleys (≈ 1.5–3 mm) everywhere, long fibres lying in them
-  antique: {
-    noise: [[9, 7, 0.45], [19, 15, 0.22], [40, 36, 0.12]],
-    felt: 0.9,
-    fibres: { count: 2600, len: [10, 55], lenPow: 1.6, spread: 1.1, bend: 0.35, width: [0.8, 1.6], relief: 0.38 },
-    form: { k: 1.1, scale: 1, albedo: 1.2 },
-    specks: 22,
-  },
-  // laid (mould-made rag): long curly cotton fibres every which way, large cloudy flocs, the mould's felt faint
-  // under them (the laid and chain lines themselves are drawn by the page's shader, exact at every zoom)
-  laid: {
-    noise: [[5, 4, 0.35], [11, 9, 0.25], [26, 22, 0.12]],
-    felt: 0.3,
-    fibres: { count: 950, len: [30, 120], lenPow: 1.3, spread: Math.PI, bend: 0.95, width: [0.9, 1.7], relief: 0.45 },
-    form: { k: 1.7, scale: 0.6, albedo: 1.6 },
-    specks: 9,
-  },
-  // newsprint: no streaky grain, an open, granular mat of stiff short fragments and fines, clumped and porous,
-  // with raised shives
-  news: {
-    noise: [[420, 380, 0.3], [200, 190, 0.26], [80, 72, 0.22], [40, 36, 0.3], [9, 7, 0.28]],
-    fibres: { count: 7500, len: [3, 15], lenPow: 1.2, spread: 2.2, bend: 0.04, width: [0.7, 1.3], relief: 0.36 },
-    shives: 22,
-    form: { k: 1.4, scale: 1.1, albedo: 2.2 },
-    specks: 0,
-    flecks: 70,
-  },
-};
-
-/** Draw a scatter of fibres into the height field (as on canvas, so they keep their round ends and curves). */
-function* addFibres(h, N, F, r) {
-  const fc = makeCanvas(N, N);
-  const fctx = fc.getContext('2d', { willReadFrequently: true });
-  fctx.fillStyle = 'rgb(128,128,128)';
-  fctx.fillRect(0, 0, N, N);
-  fctx.lineCap = 'round';
-  for (let i = 0; i < F.count; i++) {
-    const ang = Math.PI / 2 + (r() - 0.5) * F.spread;
-    const len = F.len[0] + Math.pow(r(), F.lenPow) * (F.len[1] - F.len[0]);
-    const cx0 = r() * N;
-    const cy0 = r() * N;
-    const dx = Math.cos(ang) * len * 0.5;
-    const dy = Math.sin(ang) * len * 0.5;
-    const bend = (r() - 0.5) * len * F.bend;
-    fctx.strokeStyle = r() < 0.55 ? `rgba(255,255,255,${0.14 + r() * 0.22})` : `rgba(0,0,0,${0.12 + r() * 0.18})`;
-    fctx.lineWidth = F.width[0] + r() * (F.width[1] - F.width[0]);
-    for (const ox of [-N, 0, N])
-      for (const oy of [-N, 0, N]) {
-        const cx = cx0 + ox;
-        const cy = cy0 + oy;
-        if (cx < -len || cx > N + len || cy < -len || cy > N + len) continue;
-        fctx.beginPath();
-        fctx.moveTo(cx - dx, cy - dy);
-        fctx.quadraticCurveTo(cx - Math.sin(ang) * bend, cy + Math.cos(ang) * bend, cx + dx, cy + dy);
-        fctx.stroke();
-      }
-    if ((i & 1023) === 1023) yield;
-  }
-  const fd = fctx.getImageData(0, 0, N, N).data;
-  for (let i = 0; i < N * N; i++) h[i] += ((fd[i * 4] - 128) / 128) * F.relief;
-  yield;
-}
-
-/** Book wove's slope strength (RMS of its slope bytes from 128), the level every other type is set to. */
-const WOVE_SLOPE_RMS = 22;
-
-function* structureSteps(type) {
-  const S = PAPER_STRUCTURES[type];
-  const r = rng(0.41 + hash01(type) * 0.5);
-  const N = 1024;
-  const h = new Float32Array(N * N);
-  // ---- surface
-  {
-    const layers = S.noise.map(([a, b, amp]) => [perlinTile(a, b, r), amp]);
-    const felt = S.felt ? [perlinTile(58, 52, r), perlinTile(122, 110, r), perlinTile(12, 12, r), perlinTile(13, 11, r)] : null;
-    const TAU = Math.PI * 2;
-    const W = S.wire;
-    const wireVar = W ? perlinTile(24, 20, r) : null; // where fibres bridge the knuckles, the mark is fainter
-    const wireJit = W ? perlinTile(256, 256, r) : null; // and no two knuckle marks are quite alike
-    yield;
-    for (let y = 0; y < N; y++) {
-      for (let x = 0; x < N; x++) {
-        const u = x / N;
-        const v = y / N;
-        let z = 0;
-        for (const [fn, amp] of layers) z += fn(u, v) * amp;
-        if (felt) {
-          const w1 = felt[2](u, v) * 1.6;
-          const w2 = felt[3](u, v) * 1.6;
-          const twill = 0.5 * (Math.sin(TAU * (46 * u + 22 * v) + w1 * 6) + Math.sin(TAU * (-21 * u + 47 * v) + w2 * 6));
-          z += S.felt * (felt[0](u, v) * 0.9 + felt[1](u, v) * 0.45 + twill * 0.12);
-        }
-        if (W) {
-          // a dimple at every knuckle of a broken twill (cells where (i + step·j) mod shed = 0): diagonals that
-          // break, as on a real forming fabric, rather than unbroken stripes
-          const ci = Math.floor(x / W.pitch);
-          const cj = Math.floor(y / W.pitch);
-          let d2 = Infinity;
-          for (let oi = -1; oi <= 1; oi++)
-            for (let oj = -1; oj <= 1; oj++) {
-              const i = ci + oi;
-              const j = cj + oj;
-              if ((((i + (W.step || 1) * j) % W.shed) + W.shed) % W.shed) continue;
-              const ex = x - (i + 0.5) * W.pitch;
-              const ey = y - (j + 0.5) * W.pitch;
-              d2 = Math.min(d2, ex * ex + ey * ey);
-            }
-          z -= W.depth * Math.max(0, 0.6 + 0.8 * wireVar(u, v) + 0.6 * wireJit(u, v)) * Math.exp(-d2 / (2 * 1.1 * 1.1));
-        }
-        h[y * N + x] = z;
-      }
-      if ((y & 31) === 31) yield;
-    }
-    if (S.fibres) yield* addFibres(h, N, S.fibres, r);
-    if (S.shives) {
-      for (let i = 0; i < S.shives; i++) {
-        const ang = Math.PI / 2 + (r() - 0.5) * 1.0;
-        const len = 12 + r() * 40;
-        const wid = 1.2 + r() * 1.8;
-        const cx = r() * N;
-        const cy = r() * N;
-        for (let t = -len / 2; t <= len / 2; t += 0.5)
-          for (let w = -wid; w <= wid; w += 0.5) {
-            const px = Math.round(cx + Math.cos(ang) * t - Math.sin(ang) * w);
-            const py = Math.round(cy + Math.sin(ang) * t + Math.cos(ang) * w);
-            const k = (1 - Math.abs(w) / (wid + 0.5)) * (1 - Math.pow(Math.abs(t) / (len / 2 + 1), 4));
-            h[(((py % N) + N) % N) * N + (((px % N) + N) % N)] += 0.35 * k;
-          }
-      }
-      yield;
-    }
-    if (S.calender) {
-      // the calender presses the peaks flat
-      let mean = 0;
-      for (let i = 0; i < N * N; i++) mean += h[i];
-      mean /= N * N;
-      for (let i = 0; i < N * N; i++) if (h[i] > mean) h[i] = mean + (h[i] - mean) * (1 - 0.8 * S.calender);
-      yield;
-    }
-  }
-
-  // ---- albedo + formation (a larger tile)
-  const M = 512;
-  const fibre = makeCanvas(M, M);
-  {
-    const ctx = fibre.getContext('2d');
-    const fs = (n) => Math.max(1, Math.round(n * S.form.scale));
-    const form = [
-      [perlinTile(fs(4), fs(3), r), 0.5],
-      [perlinTile(fs(9), fs(7), r), 0.32],
-      [perlinTile(fs(20), fs(16), r), 0.18],
-    ];
-    const img = ctx.createImageData(M, M);
-    const rn = rng(0.577 + hash01(type, 3) * 0.3);
-    let hmax = 0;
-    for (let i = 0; i < N * N; i += 7) hmax = Math.max(hmax, Math.abs(h[i]));
-    for (let y = 0; y < M; y++)
-      for (let x = 0; x < M; x++) {
-        const u = x / M;
-        const v = y / M;
-        let f = 0;
-        for (const [fn, w] of form) f += fn(u, v) * w;
-        const sh = h[((y * 2) % N) * N + ((x * 2) % N)] / (hmax || 1);
-        const i = (y * M + x) * 4;
-        img.data[i] = clamp((0.5 + f * 0.09 * S.form.albedo + sh * 0.02) * 255, 0, 255);
-        img.data[i + 1] = clamp((0.5 + f * 0.9 * S.form.k) * 255, 0, 255);
-        img.data[i + 2] = ((rn() + rn()) / 2) * 255;
-        img.data[i + 3] = 255;
-        if (x === M - 1 && (y & 63) === 63) yield;
-      }
-    if (S.shives || S.flecks) {
-      const dark = (px, py, k) => {
-        const i = ((((py % M) + M) % M) * M + (((px % M) + M) % M)) * 4;
-        img.data[i] = clamp(img.data[i] - k * 255, 0, 255);
-        img.data[i + 1] = clamp(img.data[i + 1] + k * 120, 0, 255);
-      };
-      for (let i = 0; i < (S.shives || 0) * 2; i++) {
-        const ang = Math.PI / 2 + (r() - 0.5) * 1.0;
-        const len = 6 + r() * 20;
-        const cx = r() * M;
-        const cy = r() * M;
-        const k = 0.05 + r() * 0.07;
-        for (let t = -len / 2; t <= len / 2; t += 0.5) {
-          const taper = 1 - Math.pow((2 * t) / len, 2);
-          const px = cx + Math.cos(ang) * t;
-          const py = cy + Math.sin(ang) * t;
-          dark(Math.round(px), Math.round(py), k * taper);
-          dark(Math.round(px - Math.sin(ang)), Math.round(py + Math.cos(ang)), k * taper * 0.45);
-        }
-      }
-      for (let i = 0; i < (S.flecks || 0); i++) {
-        const cx = Math.round(r() * M);
-        const cy = Math.round(r() * M);
-        const k = 0.12 + r() * 0.22;
-        dark(cx, cy, k);
-        if (r() < 0.3) dark(cx + 1, cy, k * 0.6);
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-    for (let i = 0; i < S.specks; i++) {
-      const sx = r() * M;
-      const sy = r() * M;
-      const rad = 0.5 + Math.pow(r(), 2) * 1.1;
-      ctx.fillStyle = `rgba(0,0,0,${0.08 + r() * 0.14})`;
-      ctx.beginPath();
-      ctx.ellipse(sx, sy, rad, rad * (0.6 + r() * 0.6), r() * Math.PI, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  // ---- cockle: a few soft swells (its own for each type; thin paper ripples smaller and more often)
-  const CN = 128;
-  const cockle = new Float32Array(CN * CN);
-  {
-    const cs = S.cockleScale || 1;
-    const oct = [
-      [perlinTile(Math.round(2 * cs), Math.round(3 * cs), r), 0.6],
-      [perlinTile(Math.round(4 * cs), Math.round(5 * cs), r), 0.3],
-      [perlinTile(Math.round(7 * cs), Math.round(9 * cs), r), 0.12],
-    ];
-    for (let y = 0; y < CN; y++)
-      for (let x = 0; x < CN; x++) {
-        let s2 = 0;
-        for (const [f, w] of oct) s2 += f(x / CN, y / CN) * w;
-        cockle[y * CN + x] = s2;
-      }
-  }
-
-  // ---- slopes, set to book wove's slope strength: the shader's relief alone says how bumpy a paper is
-  yield;
-  let ss = 0;
-  let n = 0;
-  const at = (x, y) => h[((y + N) % N) * N + ((x + N) % N)];
-  for (let y = 0; y < N; y += 3)
-    for (let x = 0; x < N; x += 3) {
-      const dx = (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1) - at(x - 1, y - 1) - 2 * at(x - 1, y) - at(x - 1, y + 1)) / 8;
-      const dy = (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1) - at(x - 1, y - 1) - 2 * at(x, y - 1) - at(x + 1, y - 1)) / 8;
-      ss += dx * dx + dy * dy;
-      n += 2;
-    }
-  const gain = WOVE_SLOPE_RMS / (127 * Math.sqrt(ss / n) || 1);
-  const surf = yield* slopeSteps(h, N, gain);
-  return {
-    normal: canvasTexture(surf, { srgb: false, repeat: [1, 1] }),
-    fibre: canvasTexture(fibre, { srgb: false, repeat: [1, 1] }),
-    cockle: canvasTexture(slopeCanvas(cockle, CN, 28), { srgb: false, repeat: [1, 1] }),
-  };
-}
-
-/**
  * Binding surfaces, tileable, as two maps:
  *   slope  — R, G: the surface's slopes (as for the paper), B: height
  *   detail — R: albedo (0.5 = the binding's own colour), G: roughness offset (0.5 = none), B: height
@@ -967,25 +390,11 @@ export function makeBindingTextures(kind) {
   };
 }
 
-const PAPER_SOURCE_KEY = 'folio.paperMaps';
-function loadPaperSource() {
-  try {
-    return localStorage.getItem(PAPER_SOURCE_KEY) === 'classic' ? 'classic' : 'sim';
-  } catch {
-    return 'sim';
-  }
-}
-function savePaperSource(src) {
-  try {
-    localStorage.setItem(PAPER_SOURCE_KEY, src);
-  } catch {
-    /* not remembered */
-  }
-}
-
 /**
- * The paper maps as flat stand-ins first, filled in by `fill()` — started a moment after the shelf is up,
- * or when a book opens first — a few milliseconds at a time.
+ * The paper maps: flat stand-ins until a book's type is wanted (`use`), then each paper's own maps, simulated
+ * from how it is made in Blender (tools/blender/paper.py → assets/paper/<type>-{surface,fibre,cockle}.webp).
+ * Book wove's are cached for offline use; another type is fetched the first time a book uses it, and until then
+ * (offline, say) it shows book wove's.
  */
 export function makeDeferredPaperTextures() {
   const flat = () => {
@@ -997,13 +406,9 @@ export function makeDeferredPaperTextures() {
   };
   const KEYS = ['normal', 'fibre', 'cockle'];
   const t = { normal: flat(), fibre: flat(), cockle: flat(), ready: false, type: null, want: null, onReady: null };
-  // each paper type has its own maps (see PAPER_RECIPES): made a few milliseconds at a time between frames, so
-  // neither the shelf nor an opening book stutters, and the last few kept (≈ 5 MB a type)
+  // the last few types kept (≈ 5 MB each)
   const cache = new Map();
   const jobs = new Map();
-  // Where the maps come from: 'sim', each paper simulated from how it is made (tools/blender/paper.py, the
-  // images in assets/paper/), or 'classic', drawn here as before (also the fallback if an image won't load)
-  t.source = loadPaperSource();
   const loadImg = (url) =>
     new Promise((resolve, reject) => {
       const img = new Image();
@@ -1018,27 +423,8 @@ export function makeDeferredPaperTextures() {
       fibre,
       cockle,
     }));
-  // today's generator, a few milliseconds at a time between frames
-  const drawn = (type) =>
-    new Promise((resolve) => {
-      const steps = paperTextureSteps(type);
-      const slice = () => {
-        const t0 = performance.now();
-        let it;
-        do it = steps.next();
-        while (!it.done && performance.now() - t0 < 8);
-        if (!it.done) return void setTimeout(slice, 0);
-        const maps = {};
-        for (const k of KEYS) {
-          maps[k] = it.value[k].image;
-          it.value[k].dispose();
-        }
-        resolve(maps);
-      };
-      slice();
-    });
   const make = (type) => {
-    const key = t.source + ':' + type;
+    const key = type;
     if (cache.has(key)) {
       const maps = cache.get(key);
       cache.delete(key);
@@ -1048,12 +434,17 @@ export function makeDeferredPaperTextures() {
     if (jobs.has(key)) return jobs.get(key);
     const remember = (maps) => {
       cache.set(key, maps);
-      for (const old of [...cache.keys()]) if (cache.size > 4 && old !== t.source + ':' + t.type && old !== key) cache.delete(old);
+      for (const old of [...cache.keys()]) if (cache.size > 4 && old !== t.type && old !== key) cache.delete(old);
       jobs.delete(key);
       return maps;
     };
-    // (a type whose images won't load is drawn, as before)
-    const job = (t.source === 'sim' ? simulated(type).catch(() => drawn(type)) : drawn(type)).then(remember);
+    // (a type whose images won't load, offline before it was ever fetched, shows book wove's for now, and is
+    // tried again next time)
+    const job = simulated(type).then(remember, () => {
+      jobs.delete(key);
+      if (type === 'wove') throw new Error('no paper maps');
+      return make('wove');
+    });
     jobs.set(key, job);
     return job;
   };
@@ -1075,19 +466,14 @@ export function makeDeferredPaperTextures() {
   /** Put a type's maps on the paper: now if they are made, else as soon as they are. */
   t.use = (type = 'wove') => {
     t.want = type;
-    if (t.type === type && t.shown === t.source) return;
-    make(type).then((maps) => {
-      if (t.want === type) {
-        show(type, maps);
-        t.shown = t.source;
-      }
-    });
-  };
-  /** Simulated or classic maps (Settings): remembered, and shown at once. */
-  t.setSource = (src) => {
-    t.source = src === 'classic' ? 'classic' : 'sim';
-    savePaperSource(t.source);
-    if (t.want) t.use(t.want);
+    if (t.type === type) return;
+    make(type)
+      .then((maps) => {
+        if (t.want === type) show(type, maps);
+      })
+      .catch(() => {
+        /* the flat stand-in stays */
+      });
   };
   t.fill = () => t.use(t.want || 'wove');
   return t;

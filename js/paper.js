@@ -1,7 +1,7 @@
 // Paper: what a book is printed on, and the state it is in.
 //
 // A paper is a type (book wove, bright offset, antique, laid, Bible, newsprint, coated): its own surface maps
-// (textures.PAPER_RECIPES) and its physical properties from mill data (docs/ANALYSIS.md §16–17). The settings then
+// (simulated in Blender: assets/paper/, textures.makeDeferredPaperTextures) and its physical properties from mill data (docs/ANALYSIS.md §16–17). The settings then
 // move it anywhere: weight (20–300 gsm), surface (glass … very rough), sheen (matte … gloss), shade (brilliant
 // white … deep buff), and the book's condition: age (toning, foxing) and wear (finger soil, cockle, softer
 // leaves). A type's own values sit inside those ranges, where the real paper is; the ends are for anything else.

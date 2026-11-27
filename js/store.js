@@ -98,10 +98,6 @@ export function getCover(id) {
   return tx(['covers'], 'readonly', (t) => reqP(t.objectStore('covers').get(id))).then((r) => r && r.blob);
 }
 
-export function putCover(id, blob) {
-  return tx(['covers'], 'readwrite', (t) => reqP(t.objectStore('covers').put({ id, blob })));
-}
-
 export async function deleteBook(id) {
   const keys = await tx(['marks'], 'readonly', (t) =>
     reqP(t.objectStore('marks').index('bookId').getAllKeys(IDBKeyRange.only(id))),
