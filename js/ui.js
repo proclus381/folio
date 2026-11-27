@@ -1,5 +1,6 @@
 // DOM overlay: title marquee, footer, reader bar, go-to popover, details / index panel, toasts.
 
+import { ICON, iconize, iconLabel } from './icons.js';
 import { CLOTHS, themePalette } from './textures.js';
 import { clamp } from './anim.js';
 import * as store from './store.js';
@@ -23,15 +24,6 @@ function fmtDate(t) {
   return new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-// Small line icons (20 × 20, currentColor), for controls that need no words.
-const svg = (d) => `<svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
-const ICON = {
-  ticks: svg('<path d="M3 5.5l1.5 1.5L7 4.5M3 10.5l1.5 1.5L7 9.5M3 15.5l1.5 1.5L7 14.5M10 6h7M10 11h7M10 16h7"/>'),
-  all: svg('<rect x="3" y="3" width="14" height="14" rx="1.5"/><path d="M6.5 10l2.5 2.5 4.5-5"/>'),
-  bin: svg('<path d="M4 5.5h12M8 5.5V4h4v1.5M5.5 5.5l.8 11h7.4l.8-11M8.5 8.5v5M11.5 8.5v5"/>'),
-  yes: svg('<path d="M4 10.5l4 4 8-9"/>'),
-  no: svg('<path d="M5 5l10 10M15 5L5 15"/>'),
-};
 
 export class UI {
   constructor(app) {
@@ -44,8 +36,104 @@ export class UI {
     this.panel = $('panel');
     this.panelBody = $('panel-body');
     this.panelMode = null;
+    this.initIcons();
     this.bind();
     this.initChrome();
+  }
+
+  /** The page's controls as icons (docs/UI-TEXT.md): each keeps its name for VoiceOver and a mouse's tooltip. */
+  initIcons() {
+    iconize($('add-btn'), 'plus', 'Add PDFs');
+    iconize($('add-files'), 'file', 'PDF files');
+    iconize($('add-folder-btn'), 'folder', 'A folder: it becomes a shelf');
+    document.querySelectorAll('#add-menu .note, #empty p').forEach((p) => p.remove());
+    iconize($('now-btn'), 'list', 'Library index');
+    iconize($('details-btn'), 'info', 'Details');
+    iconize($('rb-close'), 'close', 'Close the book (Esc)');
+    iconize($('panel-close'), 'close', 'Close');
+    iconize($('goto-go'), 'enter', 'Go');
+    const gl = document.querySelector('#goto label');
+    if (gl) {
+      gl.innerHTML = ICON.hash;
+      gl.setAttribute('aria-label', 'Go to page');
+    }
+    iconize($('empty-add'), 'file', 'Add PDFs', { keep: ICON.plus });
+    iconize($('empty-folder'), 'folder', 'Add a folder', { keep: ICON.plus });
+    const drop = document.querySelector('#drop > div');
+    if (drop) {
+      drop.innerHTML = ICON.plus;
+      drop.setAttribute('aria-label', 'Drop PDFs to add them');
+    }
+    // a help sheet, beside the settings
+    const help = document.createElement('button');
+    help.type = 'button';
+    help.className = 'icon-btn';
+    help.id = 'help-btn';
+    iconize(help, 'help', 'How to');
+    $('settings-btn').before(help);
+    help.addEventListener('click', () => (this.panelMode === 'help' ? this.closePanel() : this.openHelp()));
+
+    // the popovers: their titles, rows and buttons as icons (each named)
+    const q = (sel) => document.querySelector(sel);
+    const label = (el, name, text) => {
+      if (!el) return;
+      el.innerHTML = ICON[name];
+      el.setAttribute('aria-label', text);
+      el.title = text;
+      el.classList.add('iconized');
+    };
+    iconize($('lp-done'), 'yes', 'Done');
+    iconize($('ip-done'), 'yes', 'Done');
+    iconize($('ap-done'), 'yes', 'Done');
+    label($('lp-title'), 'light', 'Reading light');
+    label(q('#arrange-pop .ip-head .mono'), 'sort', 'Arrange the shelf');
+    document.querySelectorAll('#light-pop [data-light]').forEach((b) => {
+      const n = b.querySelector('span');
+      if (n) {
+        b.setAttribute('aria-label', n.textContent);
+        b.title = n.textContent;
+      }
+    });
+    const rows = { warmth: ['warm', 'Warmth'], time: ['sun', 'Time of day'], brightness: ['light', 'Brightness'], liveliness: ['lively', 'Liveliness'], side: ['side', 'Side'] };
+    for (const [k, [icon, text]] of Object.entries(rows)) label(q(`#light-pop .ip-row[data-k="${k}"] .ip-l`), icon, text);
+    iconize($('lp-clock'), 'clock', 'Follow my clock');
+    iconize(q('#light-pop [data-side="-1"]'), 'left', 'On the left');
+    iconize(q('#light-pop [data-side="1"]'), 'right', 'On the right');
+    label(q('#light-pop .lp-candle-off > .mono'), 'timer', 'Light it for (minutes)');
+    document.querySelectorAll('#light-pop [data-min]').forEach((b) => (b.textContent = `[ ${b.dataset.min} ]`));
+    const more = q('#light-pop [data-act="more"]');
+    if (more) more.textContent = '[ +5 ]';
+    iconize(q('#light-pop [data-act="snuff"]'), 'snuff', 'Put it out');
+    const ink = { color: ['colour', 'Colour'], grade: ['lead', 'Lead'], size: ['size', 'Thickness'], pressure: ['pressure', 'Pressure'], opacity: ['opacity', 'Ink'], smooth: ['steady', 'Steadiness'], tip: ['chisel', 'Tip'] };
+    for (const [k, [icon, text]] of Object.entries(ink)) label(q(`#ink-pop .ip-row[data-k="${k}"] .ip-l`), icon, text);
+    iconize(q('#ink-pop [data-tip="chisel"]'), 'chisel', 'Chisel tip');
+    iconize(q('#ink-pop [data-tip="round"]'), 'round', 'Round tip');
+    iconize($('ip-reset'), 'reset', 'Reset');
+    label($('ap-group') && $('ap-group').previousElementSibling, 'group', 'Group');
+    label($('ap-order') && $('ap-order').previousElementSibling, 'sort', 'Order');
+    label($('ap-plank') && $('ap-plank').previousElementSibling, 'plank', 'Shelf style');
+    iconize($('ap-reverse'), 'reverse', 'Reverse the order');
+    label(q('#ap-shelves > .ip-l'), 'shelf', 'Your shelves');
+  }
+
+  /** The help sheet: the gestures, each an icon and a few words. */
+  openHelp() {
+    const g = (icon, what, how) => `<li><span class="h-i">${ICON[icon]}</span><span class="h-w">${what}</span><span class="h-h mono dim">${how}</span></li>`;
+    this.openPanel(
+      'help',
+      '[ HOW TO ]',
+      `<section><ul class="help-list">
+        ${g('right', 'Turn', 'tap a side · swipe · drag a corner')}
+        ${g('flag', 'Bookmark', 'the flag · tap a flag twice to go')}
+        ${g('play', 'Catch a leaf', 'touch it in the air · hold')}
+        ${g('sort', 'Jump', 'page numbers · contents · a flag')}
+        ${g('info', 'Bars', 'tap the middle of the page')}
+        ${g('plus', 'Zoom', 'pinch · double-tap')}
+        ${g('ink', 'Write', 'Apple Pencil, any time · hold a tool for its settings')}
+        ${g('shelf', 'Move a book', 'press and hold it on the shelf')}
+        ${g('ticks', 'Delete several', 'index · ticks · bin')}
+      </ul></section>`,
+    );
   }
 
   // ------------------------------------------------------------------ wiring
@@ -205,13 +293,14 @@ export class UI {
   setNow() {}
 
   setCount(n) {
-    $('count').textContent = `[ ${n} ${n === 1 ? 'BOOK' : 'BOOKS'} ]`;
+    $('count').innerHTML = `${ICON.stack}<span>${n}</span>`;
+    $('count').setAttribute('aria-label', `${n} ${n === 1 ? 'book' : 'books'}`);
     $('empty').hidden = n > 0;
     $('details-btn').disabled = n === 0;
   }
 
   setSortLabel(label) {
-    $('sort-btn').textContent = `[ ${label} ]`;
+    iconize($('sort-btn'), 'sort', `Arrange the shelf: ${label.toLowerCase()}`);
   }
 
   setTheme(theme, look) {
@@ -333,8 +422,9 @@ export class UI {
   // ------------------------------------------------------------------ a raised flag's label
   showFlagTip(flag, go) {
     const t = $('flag-tip');
-    t.querySelector('.ft-p').textContent = `Bookmark · p. ${flag.page}`;
-    t.querySelector('.ft-h').textContent = this.app.reader.isOpen ? 'Tap again to go there' : 'Tap again to open here';
+    t.querySelector('.ft-p').textContent = `p. ${flag.page}`;
+    t.querySelector('.ft-h').innerHTML = ICON.right;
+    t.setAttribute('aria-label', `Bookmark, page ${flag.page}: ${this.app.reader.isOpen ? 'tap again to go there' : 'tap again to open here'}`);
     t.setAttribute('aria-label', `Go to page ${flag.page}`);
     this.flagTipGo = go;
     t.hidden = false;
@@ -458,8 +548,13 @@ export class UI {
     if (def.liveliness) range('liveliness', def.liveliness);
     const s = L.settings(id);
     for (const k of ['warmth', 'time', 'brightness', 'liveliness']) if (s[k] != null) $(`lp-${k}`).value = s[k];
-    $('lp-brightness-l').textContent = { candle: 'Brightness', oil: 'Wick', desk: 'Dimmer', fire: 'Fire', sun: 'Sun', rain: 'Daylight' }[id];
-    $('lp-liveliness-l').textContent = { candle: 'Flicker', oil: 'Flicker', fire: 'Flames', sun: 'Breeze', rain: 'Rain' }[id] || 'Liveliness';
+    // (the rows keep their icons; their names follow the light, for VoiceOver and the tooltip)
+    const nameRow = (el, text) => {
+      el.setAttribute('aria-label', text);
+      el.title = text;
+    };
+    nameRow($('lp-brightness-l'), { candle: 'Brightness', oil: 'Wick', desk: 'Dimmer', fire: 'Fire', sun: 'Sun', rain: 'Daylight' }[id]);
+    nameRow($('lp-liveliness-l'), { candle: 'Flicker', oil: 'Flicker', fire: 'Flames', sun: 'Breeze', rain: 'Rain' }[id] || 'Liveliness');
     this.syncLightValues();
     this.syncLight(L);
   }
@@ -509,11 +604,11 @@ export class UI {
     pop.querySelector('.lp-candle-off').hidden = !isCandle || !!candle;
     pop.querySelector('.lp-candle-on').hidden = !isCandle || !candle;
     pop.querySelector('.lp-room').hidden = isCandle;
-    if (candle) $('lp-left').textContent = `[ ${mm}:${String(ss).padStart(2, '0')} left ]`;
+    if (candle) $('lp-left').textContent = `${mm}:${String(ss).padStart(2, '0')}`;
     if (!isCandle) {
       const isOn = room === id;
       const t = $('lp-toggle');
-      t.textContent = `[ ${isOn ? LIGHTS[id].off : LIGHTS[id].on} ]`;
+      iconize(t, 'power', isOn ? LIGHTS[id].off : LIGHTS[id].on);
       t.setAttribute('aria-checked', String(isOn));
     }
   }
@@ -637,7 +732,7 @@ export class UI {
         });
         list.appendChild(li);
       });
-      if (!app.shelves.length) list.innerHTML = '<li class="note">No shelves yet. Name one below, then give it books from its name here or a book’s details.</li>';
+      if (!app.shelves.length) list.innerHTML = '<li class="mono dim">—</li>';
     }
     // labels and name plates hang on a plank's edge: without a plank there are none
     const plank = app.plank !== 'none';
@@ -667,8 +762,7 @@ export class UI {
         'details',
         '[ SHELF ]',
         `<section><h2>${esc(row.label || 'Not on a shelf')}</h2><p class="byline">+ ${books.filter((m) => !m.shelf).length} books +</p></section>
-         <section><p class="note">Books you haven't put on one of your shelves stand here. Give them a shelf from a shelf's name plate, or from a book's details.</p></section>
-         <section><span class="k">[ New shelf ]</span><div class="new-shelf-row"><input class="field" id="f-new-shelf" placeholder="Name" autocomplete="off"><button type="button" class="mono-btn" data-act="create">[ CREATE ]</button></div></section>`,
+         <section><span class="k">${iconLabel('shelf', 'A new shelf')}</span><div class="new-shelf-row"><input class="field" id="f-new-shelf" placeholder="Name" autocomplete="off"><button type="button" class="icon-btn" data-act="create" aria-label="Make the shelf" title="Make the shelf">${ICON.plus}</button></div></section>`,
       );
       const input = this.panelBody.querySelector('#f-new-shelf');
       const create = () => {
@@ -690,22 +784,21 @@ export class UI {
       'details',
       '[ SHELF ]',
       `<section><h2>${esc(s.name)}</h2><p class="byline">+ ${count} ${count === 1 ? 'book' : 'books'} +</p></section>
-       <section><span class="k">[ Name ]</span><input class="field" id="f-shelf-name" value="${esc(s.name)}" aria-label="Shelf name" autocomplete="off"></section>
-       <section><span class="k">[ Sections ]</span>${
+       <section><span class="k">${iconLabel('edit', 'Name')}</span><input class="field" id="f-shelf-name" value="${esc(s.name)}" aria-label="Shelf name" autocomplete="off"></section>
+       <section><span class="k">${iconLabel('group', 'Sections: rename one, or clear its name to let its books stand loose')}</span>${
          secs.length
-           ? `<p class="note">Rename a section here; clear its name to let its books stand loose. To move a book between sections, carry it over the gap (press and hold), or set it in the book's details.</p>${secs
+           ? `${secs
                .map((x) => `<input class="field sec-name" data-sec="${esc(x)}" value="${esc(x)}" aria-label="Section name" autocomplete="off">`)
                .join('')}`
-           : '<p class="note">No sections. An added folder\'s subfolders become sections; you can also name a book\'s section in its details.</p>'
+           : '<p class="mono dim">—</p>'
        }</section>
-       <section><span class="k">[ Books on this shelf ]</span><p class="note">A book stands on one shelf: ticking it here takes it off its other shelf.</p>
+       <section><span class="k">${iconLabel('stack', 'Books on this shelf (a book stands on one shelf)')}</span>
          <ul class="list check-list">${books
            .map((m) => `<li><label><input type="checkbox" data-id="${esc(m.id)}"${m.shelf === s.id ? ' checked' : ''}><span>${esc(m.title)}</span>${m.shelf && m.shelf !== s.id ? `<span class="dim">on ${esc(nameOf(m.shelf) || 'another shelf')}</span>` : ''}</label></li>`)
            .join('')}</ul></section>
        <section class="panel-actions">
-         <button type="button" class="mono-btn danger" data-act="delete">[ REMOVE SHELF ]</button>
-         <div id="confirm-delete" hidden><p class="note">Remove the shelf “${esc(s.name)}”? Its books stay in your library, on no shelf.</p>
-           <div class="seg"><button type="button" class="mono-btn danger" data-act="delete-yes">[ YES, REMOVE IT ]</button><button type="button" class="mono-btn" data-act="delete-no">[ KEEP IT ]</button></div></div>
+         <button type="button" class="icon-btn danger" data-act="delete" aria-label="Remove the shelf (its books stay in the library)" title="Remove the shelf (its books stay in the library)">${ICON.bin}</button>
+         <div id="confirm-delete" class="confirm-row" hidden><span>${ICON.bin}</span><button type="button" class="icon-btn danger" data-act="delete-yes" aria-label="Remove the shelf">${ICON.yes}</button><button type="button" class="icon-btn" data-act="delete-no" aria-label="Keep it">${ICON.no}</button></div>
        </section>`,
     );
     const body = this.panelBody;
@@ -744,7 +837,6 @@ export class UI {
     body.querySelector('[data-act="delete-yes"]').addEventListener('click', async () => {
       this.closePanel();
       await app.deleteShelf(s.id);
-      this.toast(`Removed the shelf “${s.name}”`, 2400);
     });
   }
 
@@ -775,7 +867,12 @@ export class UI {
     } catch {
       return;
     }
-    this.toast('Press and hold a tool for its thickness, pressure and colour', 3400);
+    // (once: the tool pulses, to say there's more under it — press and hold)
+    const b = document.querySelector(`[data-tool="${this.app.reader.tool}"]`) || $('rb-pen');
+    b.classList.remove('pulse');
+    void b.offsetWidth;
+    b.classList.add('pulse');
+    setTimeout(() => b.classList.remove('pulse'), 2600);
   }
 
   toggleInkPop(force, tool = this.inkTool) {
@@ -830,7 +927,10 @@ export class UI {
     const kind = tool === 'eraser' ? 'eraser' : TOOL_KIND[tool];
     const st = inkSettings.get(tool);
     const names = { pen: 'Pen', pencil: 'Pencil', marker: 'Highlighter', eraser: 'Eraser' };
-    $('ip-title').textContent = `[ ${names[kind]} ]`;
+    // the tool's own icon from the reader bar (a highlighter: its swatch)
+    const tb = document.querySelector(`#readerbar [data-tool="${tool}"]`);
+    $('ip-title').innerHTML = tb ? tb.innerHTML : '';
+    $('ip-title').setAttribute('aria-label', names[kind]);
     const show = {
       color: kind !== 'eraser',
       size: true,
@@ -1002,7 +1102,10 @@ export class UI {
   // ------------------------------------------------------------------ panel
   openPanel(mode, kicker, html) {
     this.panelMode = mode;
-    $('panel-kicker').textContent = kicker;
+    const name = kicker.replace(/[[\]]/g, '').trim();
+    const icon = { 'LIBRARY INDEX': ICON.list, 'BOOK DETAILS': ICON.info, SHELF: ICON.shelf, 'HOW TO': ICON.help }[name] || (name === 'SETTINGS' ? $('settings-btn').innerHTML : ICON.info);
+    $('panel-kicker').innerHTML = icon;
+    $('panel-kicker').setAttribute('aria-label', name.toLowerCase());
     this.panelBody.innerHTML = html;
     this.panel.hidden = false;
     this.panelBody.scrollTop = 0;
@@ -1011,7 +1114,7 @@ export class UI {
   closePanel() {
     this.panel.hidden = true;
     this.panelMode = null;
-    $('details-btn').textContent = 'VIEW DETAILS [+]';
+    $('details-btn').setAttribute('aria-pressed', 'false');
   }
 
   // ------------------------------------------------------------------ settings
@@ -1021,18 +1124,16 @@ export class UI {
     this.openPanel(
       'settings',
       '[ SETTINGS ]',
-      `<section><span class="k">[ Paper ]</span>
-         <p class="note">The paper of every book that hasn't one of its own. A book's own paper is set in its details.</p>
+      `<section><span class="k">${iconLabel('paper', "Paper: every book's that hasn't its own")}</span>
          <div id="pe-lib"></div></section>
-       <section><span class="k">[ Wear ]</span>
-         <div class="seg"><button type="button" class="mono-btn" id="st-wear" aria-pressed="${app.livingWear}">${app.livingWear ? '[ ON ]' : '[ OFF ]'}</button><span class="mono dim">Books wear as you read them</span></div>
-         <p class="note">The leaves you turn pick up a little finger soil at their corners, and a book grows softer and a touch wavier the more it is read. Off, a book is as worn as its paper's Wear says.</p></section>
-       <section><span class="k">[ Binding for new books ]</span>
+       <section><span class="k">${iconLabel('wear', 'Books wear as you read them')}</span>
+         <div class="seg"><button type="button" class="mono-btn" id="st-wear" aria-pressed="${app.livingWear}" title="Books wear as you read them">${app.livingWear ? '[ ON ]' : '[ OFF ]'}</button></div></section>
+       <section><span class="k">${iconLabel('binding', 'Binding for new books')}</span>
          <div class="seg">${Object.entries(BINDINGS)
            .map(([k, b]) => `<button type="button" class="mono-btn" data-newbind="${k}" aria-pressed="${defaultBinding() === k}">${b.label}</button>`)
            .join('')}</div></section>
-       <section><span class="k">[ Storage ]</span><p class="note" id="st-storage">Checking…</p></section>
-       <section><span class="k">[ Keys ]</span><div class="facts">
+       <section><span class="k">${iconLabel('storage', 'Storage')}</span><div class="meter"><i id="st-bar"></i></div><p class="mono dim" id="st-storage"></p></section>
+       <section><span class="k">${iconLabel('keys', 'Keys')}</span><div class="facts">
          <span>← →</span><span>Browse / turn pages</span>
          <span>Enter</span><span>Open book</span>
          <span>Esc</span><span>Close / back</span>
@@ -1063,13 +1164,13 @@ export class UI {
     const mb = (n) => (n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(n / 1e6))} MB`);
     Promise.all([navigator.storage && navigator.storage.estimate ? navigator.storage.estimate() : null, navigator.storage && navigator.storage.persisted ? navigator.storage.persisted() : null])
       .then(([est, kept]) => {
-        const n = app.metas.length;
-        let t = `${n} ${n === 1 ? 'book' : 'books'}, kept on this device only.`;
-        if (est && est.usage != null) t += ` Using ${mb(est.usage)}${est.quota ? ` of the ${mb(est.quota)} this browser allows` : ''}.`;
-        if (kept === false) t += ' The browser may clear it if space runs short: adding the app to the Home Screen keeps it.';
+        let t = est && est.usage != null ? `${mb(est.usage)}${est.quota ? ` / ${mb(est.quota)}` : ''}` : '';
+        if (est && est.usage != null && est.quota) body.querySelector('#st-bar').style.width = `${Math.max(1, (100 * est.usage) / est.quota).toFixed(1)}%`;
+        // (the one thing worth saying: the browser may clear it unless the app is on the Home Screen)
+        if (kept === false) t += ' · add to the Home Screen to keep it';
         st.textContent = t;
       })
-      .catch(() => (st.textContent = 'Kept on this device only.'));
+      .catch(() => {});
   }
 
   /**
@@ -1088,8 +1189,7 @@ export class UI {
     const row = (k, label) =>
       `<label class="ip-row pe-row"><span class="ip-l mono">${label}</span><span class="pe-track"><input type="range" data-k="${k}" min="0" max="1" step="0.005" value="${toPos(k, s[k])}" aria-label="${label}"><i class="pe-mark" style="left:calc(8px + (100% - 16px) * ${toPos(k, preset[k]).toFixed(4)})" title="${esc(T.label)}"></i></span><span class="ip-v mono" data-v="${k}"></span></label>`;
     host.innerHTML = `
-      <div class="ap-opts pe-types" role="radiogroup" aria-label="Paper">${PAPER_ORDER.map((k) => `<button type="button" class="mono-btn" role="radio" data-ptype="${k}" aria-checked="${k === s.type}">[ ${PAPER_TYPES[k].label} ]</button>`).join('')}</div>
-      <p class="note pe-note">${esc(T.note)} The marks under the sliders show where this paper really is; every slider goes all the way.</p>
+      <div class="ap-opts pe-types" role="radiogroup" aria-label="Paper">${PAPER_ORDER.map((k) => `<button type="button" class="mono-btn" role="radio" data-ptype="${k}" aria-checked="${k === s.type}" title="${esc(PAPER_TYPES[k].note)}">[ ${PAPER_TYPES[k].label} ]</button>`).join('')}</div>
       ${row('gsm', 'Weight')}
       ${row('surface', 'Surface')}
       ${row('sheen', 'Sheen')}
@@ -1097,7 +1197,7 @@ export class UI {
       ${row('age', 'Age')}
       ${row('wear', 'Wear')}
       <p class="pe-facts mono dim" data-v="facts"></p>
-      <div class="seg"><button type="button" class="mono-btn dim" data-act="pe-reset">Back to ${esc(T.label)}</button></div>`;
+      <div class="seg"><button type="button" class="icon-btn" data-act="pe-reset" aria-label="Back to ${esc(T.label)}" title="Back to ${esc(T.label)}">${ICON.reset}</button></div>`;
     const word = (k, v) => {
       if (k === 'gsm') return `${Math.round(v)} gsm`;
       if (k === 'surface') return v < 0.1 ? 'Glass' : v < 0.25 ? 'Smooth' : v < 0.45 ? 'Fine' : v < 0.65 ? 'Vellum' : v < 0.85 ? 'Toothy' : 'Rough';
@@ -1156,7 +1256,7 @@ export class UI {
     this.openPanel(
       'index',
       '[ LIBRARY INDEX ]',
-      `<section class="index"><div class="index-head"><span class="k">${metas.length} ${metas.length === 1 ? 'book' : 'books'}</span>
+      `<section class="index"><div class="index-head"><span class="k" aria-label="${metas.length} books">${ICON.stack} ${metas.length}</span>
          <span class="index-tools">
            <button type="button" class="icon-btn" data-act="all" aria-label="Tick all" hidden>${ICON.all}</button>
            <button type="button" class="icon-btn" data-act="delete" aria-label="Delete the ticked books" hidden>${ICON.bin}<b class="count"></b></button>
@@ -1215,7 +1315,7 @@ export class UI {
   async openDetails(meta) {
     if (!meta) return;
     const app = this.app;
-    $('details-btn').textContent = 'HIDE DETAILS [-]';
+    $('details-btn').setAttribute('aria-pressed', 'true');
     const reading = app.reader.isOpen && app.reader.meta && app.reader.meta.id === meta.id;
     const spread = reading ? app.reader.s : meta.spread || 0;
     const curPage = Math.max(1, Math.min(meta.pages, spread * 2 || 1));
@@ -1238,52 +1338,51 @@ export class UI {
         ${meta.author ? `<p class="byline">+ by ${esc(meta.author)} +</p>` : ''}
       </section>
       <div class="tabs" role="tablist" aria-label="Details">
-        <button type="button" class="mono-btn" role="tab" data-tab="reading" aria-selected="${tab === 'reading'}">Reading</button>
-        <button type="button" class="mono-btn" role="tab" data-tab="book" aria-selected="${tab === 'book'}">Book</button>
+        <button type="button" class="icon-btn" role="tab" data-tab="reading" aria-selected="${tab === 'reading'}" aria-label="Reading" title="Reading">${ICON.ribbon}</button>
+        <button type="button" class="icon-btn" role="tab" data-tab="book" aria-selected="${tab === 'book'}" aria-label="The book" title="The book">${ICON.book}</button>
       </div>
       <div class="tab-pane" data-pane="reading"${tab === 'reading' ? '' : ' hidden'}>
       <section>
-        <div class="facts"><span>Position</span><span>Page ${curPage} of ${meta.pages}</span><span>Last opened</span><span>${fmtDate(meta.openedAt)}</span></div>
+        <div class="pos-row"><button type="button" class="icon-btn play" data-act="open" aria-label="${reading ? 'Back to the page' : spread ? 'Continue reading' : 'Open the book'}" title="${reading ? 'Back to the page' : spread ? 'Continue reading' : 'Open the book'}">${ICON.play}</button>
+          <span class="mono">p. ${curPage} / ${meta.pages}</span><span class="mono dim">${meta.openedAt ? fmtDate(meta.openedAt) : ''}</span></div>
         <div class="progress"><i style="width:${pct}%"></i></div>
-        <div class="panel-actions"><button type="button" class="mono-btn" data-act="open">${reading ? '[ BACK TO THE PAGE ]' : spread ? '[ CONTINUE READING ]' : '[ OPEN BOOK ]'}</button></div>
       </section>
       ${
         outline.length
-          ? `<section><span class="k">[ Contents ]</span><ul class="list">${outline
+          ? `<section><span class="k">${iconLabel('contents', 'Contents')}</span><ul class="list">${outline
               .slice(0, 300)
               .map((o) => `<li class="d${Math.min(3, o.depth)}"><button type="button" data-page="${o.page || ''}"><span>${esc(o.title)}</span><span class="pg">${o.page || ''}</span></button></li>`)
               .join('')}</ul></section>`
           : ''
       }
-      <section><span class="k">[ Bookmarks ]</span>${
+      <section><span class="k">${iconLabel('flag', 'Bookmarks')}</span>${
         bookmarks.length
-          ? `<ul class="list">${bookmarks.map((s) => `<li><button type="button" data-spread="${s}"><span>Pages ${Math.max(1, s * 2)}–${Math.min(meta.pages, s * 2 + 1)}</span></button></li>`).join('')}</ul>`
-          : '<p class="note">Bookmark a spread with the flag in the reader bar (or B). Its flag sticks out of the top of the book: tap it twice to go there.</p>'
+          ? `<ul class="list">${bookmarks.map((s) => `<li><button type="button" data-spread="${s}"><span>p. ${Math.max(1, s * 2)}–${Math.min(meta.pages, s * 2 + 1)}</span></button></li>`).join('')}</ul>`
+          : '<p class="mono dim">—</p>'
       }</section>
-      <section id="marks-sec"><span class="k">[ Annotations ]</span><p class="note">Counting…</p></section>
+      <section id="marks-sec"><span class="k">${iconLabel('ink', 'Annotations')}</span></section>
       </div>
       <div class="tab-pane" data-pane="book"${tab === 'book' ? '' : ' hidden'}>
       <section>
-        <span class="k">[ Title + Author ]</span>
+        <span class="k">${iconLabel('edit', 'Title and author')}</span>
         <input class="field" id="f-title" value="${esc(meta.title)}" aria-label="Title" autocomplete="off">
         <input class="field" id="f-author" value="${esc(meta.author)}" placeholder="Author" aria-label="Author" autocomplete="off">
       </section>
       <section>
-        <span class="k">[ Shelf ]</span>
+        <span class="k">${iconLabel('shelf', 'Shelf')}</span>
         <select class="field" id="f-shelf" aria-label="Shelf">
           <option value="">On no shelf</option>
           ${app.shelves.map((x) => `<option value="${esc(x.id)}"${meta.shelf === x.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}
           <option value="__new">New shelf…</option>
         </select>
-        <div class="new-shelf-row" id="f-new-shelf-row" hidden><input class="field" id="f-new-shelf-name" placeholder="Name of the new shelf" autocomplete="off"><button type="button" class="mono-btn" data-act="new-shelf">[ CREATE ]</button></div>
+        <div class="new-shelf-row" id="f-new-shelf-row" hidden><input class="field" id="f-new-shelf-name" placeholder="Name of the new shelf" autocomplete="off"><button type="button" class="icon-btn" data-act="new-shelf" aria-label="Make the shelf" title="Make the shelf">${ICON.plus}</button></div>
         <div id="f-section-row" class="f-labelled"${meta.shelf ? '' : ' hidden'}>
-          <span class="mono dim">Section</span>
-          <input class="field" id="f-section" value="${esc(meta.section || '')}" placeholder="None" aria-label="Section" autocomplete="off" list="f-sections">
+          <input class="field" id="f-section" value="${esc(meta.section || '')}" placeholder="Section" aria-label="Section" autocomplete="off" list="f-sections">
           <datalist id="f-sections">${sectionsOf(app.metas, meta.shelf).map((x) => `<option value="${esc(x)}">`).join('')}</datalist>
         </div>
       </section>
       <section>
-        <span class="k">[ Binding ]</span>
+        <span class="k">${iconLabel('binding', 'Binding')}</span>
         <div class="cloths">${cloths}</div>
         <div class="seg"><span class="mono dim">Material</span>
           ${Object.entries(BINDINGS).map(([k, b]) => `<button type="button" class="mono-btn" data-material="${k}" aria-pressed="${bindingKind(look) === k}">${b.label}</button>`).join('')}
@@ -1298,27 +1397,18 @@ export class UI {
         </div>
       </section>
       <section>
-        <span class="k">[ Paper ]</span>
-        <p class="note" id="pe-own-note">${meta.paper ? 'This book has its own paper.' : `The library's paper (${esc(PAPER_TYPES[fullSettings(app.libraryPaper).type].label)}, set in Settings). Changing it here gives this book its own.`}</p>
+        <span class="k">${iconLabel('paper', 'Paper')}</span><span id="pe-own-note" hidden></span>
         <div id="pe-book"></div>
-        <div class="seg" id="pe-lib-row"${meta.paper ? '' : ' hidden'}><button type="button" class="mono-btn dim" data-act="paper-lib">Use the library's paper</button></div>
-        ${reading ? '<p class="note">A new weight shows in the book\'s thickness once it is closed.</p>' : ''}
+        <div class="seg" id="pe-lib-row"${meta.paper ? '' : ' hidden'}><button type="button" class="icon-btn" data-act="paper-lib" aria-label="Use the library's paper" title="Use the library's paper">${ICON.reset}</button></div>
       </section>
       <section>
-        <span class="k">[ File ]</span>
-        <div class="facts">
-          <span>Name</span><span style="text-transform:none">${esc(meta.fileName || '—')}</span>
-          <span>Size</span><span>${fmtBytes(meta.size)}</span>
-          <span>Pages</span><span>${meta.pages}</span>
-          <span>Page size</span><span>${meta.pageW ? `${Math.round(meta.pageW)} × ${Math.round(meta.pageH)} pt` : '—'}</span>
-          <span>Added</span><span>${fmtDate(meta.addedAt)}</span>
-        </div>
+        <span class="k">${iconLabel('file', 'File')}</span>
+        <p class="file-line"><span>${esc(meta.fileName || '—')}</span> <span class="mono dim">${fmtBytes(meta.size)} · ${meta.pages} pp${meta.pageW ? ` · ${Math.round(meta.pageW)} × ${Math.round(meta.pageH)} pt` : ''} · ${fmtDate(meta.addedAt)}</span></p>
       </section>
       <section class="panel-actions">
-        <button type="button" class="mono-btn" data-act="export">[ EXPORT PDF WITH ANNOTATIONS ]</button>
-        <button type="button" class="mono-btn danger" data-act="remove">[ REMOVE FROM LIBRARY ]</button>
-        <div id="confirm-remove" hidden><p class="note">Remove “${esc(meta.title)}”, its notes and bookmarks from this device?</p>
-          <div class="seg"><button type="button" class="mono-btn danger" data-act="remove-yes">[ YES, REMOVE ]</button><button type="button" class="mono-btn" data-act="remove-no">[ KEEP IT ]</button></div></div>
+        <div class="act-row"><button type="button" class="icon-btn" data-act="export" aria-label="Export the PDF with its annotations" title="Export the PDF with its annotations">${ICON.export}</button>
+          <button type="button" class="icon-btn danger" data-act="remove" aria-label="Remove from the library" title="Remove from the library">${ICON.bin}</button></div>
+        <div id="confirm-remove" class="confirm-row" hidden><span>${ICON.bin}</span><button type="button" class="icon-btn danger" data-act="remove-yes" aria-label="Remove it, its notes and bookmarks">${ICON.yes}</button><button type="button" class="icon-btn" data-act="remove-no" aria-label="Keep it">${ICON.no}</button></div>
       </section>
       </div>`,
     );
@@ -1382,7 +1472,6 @@ export class UI {
     body.querySelector('[data-act="material-all"]').addEventListener('click', async () => {
       const kind = bindingKind(meta.look);
       await app.setMaterialAll(kind);
-      this.toast(`Every book is now bound in ${BINDINGS[kind].label.toLowerCase()}, new ones too`, 2600);
     });
     body.querySelectorAll('[data-cover]').forEach((b) =>
       b.addEventListener('click', () => {
@@ -1398,18 +1487,15 @@ export class UI {
     );
     // paper: the library's, until changed here
     const peHost = body.querySelector('#pe-book');
-    const peNote = body.querySelector('#pe-own-note');
     const peLib = body.querySelector('#pe-lib-row');
     const onPaper = (st, final) => {
       app.setBookPaper(meta, st, { final });
-      peNote.textContent = 'This book has its own paper.';
       peLib.hidden = false;
     };
     this.mountPaperEditor(peHost, meta.paper || app.libraryPaper, onPaper);
     body.querySelector('[data-act="paper-lib"]').addEventListener('click', () => {
       app.setBookPaper(meta, null);
       this.mountPaperEditor(peHost, app.libraryPaper, onPaper);
-      peNote.textContent = `The library's paper (${PAPER_TYPES[fullSettings(app.libraryPaper).type].label}, set in Settings). Changing it here gives this book its own.`;
       peLib.hidden = true;
     });
     const shelfSel = body.querySelector('#f-shelf');
@@ -1425,7 +1511,6 @@ export class UI {
       body.querySelector('#f-section-row').hidden = !meta.shelf;
       body.querySelector('#f-section').value = '';
       body.querySelector('#f-sections').innerHTML = sectionsOf(app.metas, meta.shelf).map((x) => `<option value="${esc(x)}">`).join('');
-      this.toast(shelfSel.value ? `On the shelf “${app.shelves.find((x) => x.id === shelfSel.value).name}”` : 'On no shelf', 2000);
     });
     const createShelf = async () => {
       const input = body.querySelector('#f-new-shelf-name');
@@ -1434,13 +1519,11 @@ export class UI {
       const ns = app.createShelf(v);
       await app.setBookShelf(meta, ns.id);
       this.openDetails(meta);
-      this.toast(`On the new shelf “${ns.name}”`, 2000);
     };
     body.querySelector('[data-act="new-shelf"]').addEventListener('click', createShelf);
     const secField = body.querySelector('#f-section');
     secField.addEventListener('change', async () => {
       await app.setBookSection(meta, secField.value);
-      this.toast(meta.section ? `In the section “${meta.section}”` : 'In no section', 1800);
     });
     secField.addEventListener('keydown', (e) => {
       e.stopPropagation();
@@ -1464,13 +1547,13 @@ export class UI {
     const sec = body.querySelector('#marks-sec');
     const pages = [...marks.keys()].filter((p) => marks.get(p).length).sort((a, b) => a - b);
     const total = pages.reduce((n, p) => n + marks.get(p).length, 0);
-    sec.innerHTML = `<span class="k">[ Annotations ]</span>${
+    sec.innerHTML = `<span class="k">${iconLabel('ink', 'Annotations')}</span>${
       total
-        ? `<p class="note" style="margin:0 0 6px">${total} mark${total === 1 ? '' : 's'} on ${pages.length} page${pages.length === 1 ? '' : 's'}.</p><ul class="list">${pages
+        ? `<ul class="list">${pages
             .slice(0, 200)
-            .map((p) => `<li><button type="button" data-mpage="${p}"><span>Page ${p}</span><span class="pg">${marks.get(p).length}</span></button></li>`)
+            .map((p) => `<li><button type="button" data-mpage="${p}"><span>p. ${p}</span><span class="pg">${marks.get(p).length}</span></button></li>`)
             .join('')}</ul>`
-        : '<p class="note">No highlights yet. Pick a highlighter, the pen or the pencil in the reader bar. With an Apple Pencil, the pencil draws and fingers keep turning pages.</p>'
+        : '<p class="mono dim">—</p>'
     }`;
     sec.querySelectorAll('[data-mpage]').forEach((b) =>
       b.addEventListener('click', () => {

@@ -12,7 +12,7 @@ import * as store from './store.js';
 import { DEG, _N, _P, _T, _U, _e, _q, _v, _w } from './reader-common.js';
 import { ReaderFit } from './reader-fit.js';
 import { Pages } from './pages.js';
-import { Turning, DROP } from './turning.js';
+import { Turning } from './turning.js';
 import { Gestures } from './gestures.js';
 import { clamp, lerp, seg, easeInOutCubic, easeOutCubic, easeInOutSine, smoothDamp } from './anim.js';
 
@@ -291,7 +291,6 @@ export class Reader {
       }
       if (tl >= OPEN.fanAt + 0.1 && this.fanStarted && !this.fan) {
         this.phase = 'reading';
-        this.drop = { start: time };
         this.showShelf(false); // read alone: nothing else to draw
         this.app.ui.pokeChrome();
         this.app.ui.onOpened && this.app.ui.onOpened();
@@ -340,10 +339,6 @@ export class Reader {
     // leaves in flight
     if (this.updateFlights(dt, time)) busy = true;
     if (this.updateHover(dt)) busy = true;
-    if (this.drop) {
-      if (this.flights.length || this.fan || time - this.drop.start > DROP.rise + (DROP.n - 1) * DROP.gap + DROP.fall * this.dropFall()) this.drop = null;
-      else busy = true;
-    }
 
     // stacks
     const leftCount = this.leftCount(time);

@@ -1,9 +1,9 @@
 // Turning leaves: the leaves in use and their states, a leaf taken by its edge (corner peel), turned by a tap,
 // caught in the air, landing with its free edge whipping over (TIP: each paper's own physics), a jump turned as one
-// block (CLUMP), and the top leaves settling as a book opens (DROP). Mixed into Reader (reader.js).
+// block (CLUMP). Mixed into Reader (reader.js).
 import { Leaf, NX, NY, makePageMaterial, surfaceTable } from './leaf.js';
 import * as THREE from 'three';
-import { clamp, easeInOutSine, easeOutCubic, lerp, smoothDamp, smoothstep } from './anim.js';
+import { clamp, easeInOutSine, lerp, smoothDamp, smoothstep } from './anim.js';
 import { TURN_DUR, _N, _T, _U, _v, _w } from './reader-common.js';
 
 // Corner peel: where you take hold of a leaf decides how it lifts.
@@ -56,11 +56,6 @@ const CATCH = { brake: 0.05, resume: 0.08, delay: 0.06, hold: 0.2, blend: 0.25 }
 // down. The turn takes 0.7 s + 45 ms · log2(leaves), at most 1.1 s (stripe.press's gather).
 const CLUMP = { minThick: 0.06 };
 const clumpDur = (n) => Math.min(1.1, 0.7 + 0.045 * Math.log2(Math.max(1, n)));
-
-// Opening. As the book lands open at your place, the top leaves on each side
-// spring up a little from the spine, then settle back onto their stacks one after another, the deepest first
-// (50 ms apart, 0.4 s each, stripe.press's gravity drop), the fore-edge trailing on its cushion of air.
-export const DROP = { n: 3, lift: [0.035, 0.025, 0.016], rise: 0.12, gap: 0.05, fall: 0.4 };
 
 // Paper. The leaf moves as its paper is made (paper.js: phys): `sag` (weight over
 // stiffness) sets how far its free edge droops and lags, `airy` (lightness) how much the air holds it (it floats
@@ -169,7 +164,6 @@ export class Turning {
       const lk = this.s - 1 - back;
       if (rk < N) need.set(rk, { t: 0, eps: 0.012, rest: 'R' });
       if (lk >= 0) need.set(lk, { t: 1, eps: 0.012, rest: 'L' });
-      if (this.drop && !this.flights.length) this.dropLeaves(need, time - this.drop.start);
       if (this.flights.length) {
         const ks = this.flights.map((f) => f.k);
         const kmin = Math.min(...ks);
@@ -673,30 +667,6 @@ export class Turning {
   /** How the open book's paper moves (paper.js: phys). */
   get phys() {
     return this.paperPhys || NEUTRAL_PHYS;
-  }
-
-
-  /** How long the opening's leaves take to settle, by their paper's lightness. */
-  dropFall() {
-    return clamp(Math.pow(this.phys.airy, 0.4), 0.75, 1.4);
-  }
-
-
-  /** The top leaves of both stacks as they spring up and settle (DROP), `x` seconds after the book landed open. */
-  dropLeaves(need, x) {
-    const N = this.d.leaves;
-    for (let j = 0; j < DROP.n; j++) {
-      const rise = easeOutCubic(clamp(x / DROP.rise, 0, 1));
-      const u = clamp((x - DROP.rise - (DROP.n - 1 - j) * DROP.gap) / (DROP.fall * this.dropFall()), 0, 1);
-      const lift = DROP.lift[j] * Math.pow(this.flex, 0.3) * rise * (1 - smoothstep(0, 1, u));
-      const trail = 0.14 * (DROP.lift[j] / DROP.lift[0]) * Math.sin(Math.PI * u) * Math.pow(this.flex, 0.8);
-      const eps = 0.012 + (DROP.n - 1 - j) * 0.004; // the top leaf stays on top
-      const curl = { amount: 0, power: 0.86, span: 32.4, angle: 0, pivotU: 0.74, pivotV: 0.5, cone: 0 };
-      const r = this.s + j;
-      const l = this.s - 1 - j;
-      if (r < N) need.set(r, { t: lift, eps, bend: trail, curl: { ...curl } });
-      if (l >= 0) need.set(l, { t: 1 - lift, eps, bend: -trail, curl: { ...curl } });
-    }
   }
 
 

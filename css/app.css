@@ -1429,3 +1429,149 @@ body[data-mode='reading'][data-chrome='hidden'] #readerbar * {
 .list li button .ti {
   flex: 1;
 }
+
+/* ---------------------------------------------------------------- icons instead of words (docs/UI-TEXT.md) */
+.iconized {
+  display: inline-grid;
+  place-items: center;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 2px;
+}
+.iconized svg,
+.icon-btn svg {
+  width: 18px;
+  height: 18px;
+}
+#count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+#count svg {
+  width: 16px;
+  height: 16px;
+}
+.ilabel {
+  display: inline-flex;
+  opacity: 0.75;
+}
+.ilabel svg,
+#panel-kicker svg {
+  width: 17px;
+  height: 17px;
+}
+#panel-kicker {
+  display: inline-flex;
+}
+.k:has(.ilabel) {
+  display: inline-flex;
+  margin-bottom: 6px;
+}
+/* the notes that used to explain things, and the reading lights' names (their buttons are named) */
+#lp-note,
+#ip-note,
+#ap-note,
+.lp-choices span {
+  display: none !important;
+}
+.tabs .icon-btn[aria-selected='true'] {
+  box-shadow: inset 0 -1.5px 0 currentColor;
+}
+.tabs .icon-btn[aria-selected='false'] {
+  opacity: 0.45;
+}
+.pos-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.icon-btn.play svg {
+  width: 22px;
+  height: 22px;
+}
+.act-row {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+}
+.file-line {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.meter {
+  height: 3px;
+  background: var(--soft);
+  margin: 4px 0 6px;
+}
+.meter i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: currentColor;
+  opacity: 0.55;
+}
+#goto label svg,
+#flag-tip .ft-h svg {
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+}
+#ip-title svg,
+#ip-title i {
+  width: 18px;
+  height: 18px;
+}
+#drop > div svg {
+  width: 72px;
+  height: 72px;
+}
+#empty .empty-acts .iconized {
+  grid-auto-flow: column;
+  gap: 2px;
+}
+#empty .empty-acts .iconized svg {
+  width: 28px;
+  height: 28px;
+}
+.help-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.help-list li {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  column-gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--soft);
+}
+.help-list .h-i {
+  grid-row: span 2;
+  padding-top: 1px;
+}
+.help-list .h-i svg {
+  width: 18px;
+  height: 18px;
+}
+.help-list .h-h {
+  font-size: 11px;
+  line-height: 1.5;
+}
+/* a tool says, once, that there's more under it */
+@keyframes folio-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  25%,
+  65% {
+    transform: scale(1.22);
+  }
+}
+.pulse {
+  animation: folio-pulse 1.3s ease-in-out 2;
+}

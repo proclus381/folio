@@ -788,7 +788,6 @@ class App {
     const idx = this.shelf.selected;
     const next = row[idx + 1] || row[idx - 1];
     await this.loadLibrary(next && next.meta.id !== meta.id ? next.meta.id : null);
-    this.ui.toast('Removed from the shelf');
   }
 
   /** Delete several books at once (the index's select mode): the open one closes first; the library reloads once. */
@@ -803,12 +802,11 @@ class App {
     for (const m of metas) await store.deleteBook(m.id);
     const cur = this.currentMeta();
     await this.loadLibrary(cur && !ids.has(cur.id) ? cur.id : null);
-    this.ui.toast(metas.length === 1 ? 'Removed from the shelf' : `${metas.length} books removed`);
   }
 
   async exportBook(meta) {
     try {
-      this.ui.toast('Preparing the PDF…', 6000);
+      this.ui.toast('Exporting…', 6000);
       const { blob, name, count } = await exportAnnotated(meta);
       const file = new File([blob], name, { type: 'application/pdf' });
       if (navigator.canShare && this.isTouch && navigator.canShare({ files: [file] })) {
@@ -823,7 +821,7 @@ class App {
         a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 20000);
       }
-      this.ui.toast(count ? `Exported with ${count} mark${count === 1 ? '' : 's'}` : 'Exported (no marks yet)');
+      this.ui.toast(`Exported · ${count} mark${count === 1 ? '' : 's'}`);
     } catch (err) {
       console.error(err);
       this.ui.toast('Export failed: ' + (err.message || err));
@@ -890,7 +888,7 @@ class App {
         const res = await importFiles(
           g.files,
           this.metas,
-          (i, n, fname) => this.ui.toast(`${name} · adding ${done + i + 1} of ${total} — ${fname}`, 60000),
+          (i, n, fname) => this.ui.toast(`${done + i + 1} / ${total} — ${fname}`, 60000),
           {
             shelf: s.id,
             shelfName: s.name,
@@ -924,10 +922,10 @@ class App {
       if (report.added || report.moved) {
         const n = report.added + report.moved;
         const secs = new Set(this.metas.filter((m) => report.shelves.some((x) => x.id === m.shelf) && m.section).map((m) => m.shelf + '|' + m.section)).size;
-        parts.push(`${shelfNames}: ${n} ${n === 1 ? 'book' : 'books'}${secs ? ` in ${secs} section${secs === 1 ? '' : 's'}` : ''}`);
-      } else parts.push(`${shelfNames}: nothing new`);
+        parts.push(`${shelfNames} +${n}${secs ? ` · ${secs} §` : ''}`);
+      } else parts.push(`${shelfNames} +0`);
       if (report.skipped) parts.push(`${report.skipped} already here`);
-      if (report.failed) parts.push(`${report.failed} could not be read`);
+      if (report.failed) parts.push(`${report.failed} unreadable`);
       this.ui.toast(parts.join(' · '), 4200);
       clearTimeout(this.importT);
       this.importT = 0;
@@ -970,14 +968,14 @@ class App {
       const res = await importFiles(
         files,
         this.metas,
-        (i, n, name) => this.ui.toast(n > 1 ? `Adding ${i + 1} of ${n} — ${name}` : `Adding ${name}`, 60000),
+        (i, n, name) => this.ui.toast(n > 1 ? `${i + 1} / ${n} — ${name}` : name, 60000),
         { shelf: s ? s.id : null, shelfName: s ? s.name : null, order: this.sort === 'manual' ? Math.max(0, ...this.metas.map((m) => m.order || 0)) + 1024 : null },
       );
       const parts = [];
-      if (res.added.length) parts.push(`Added ${res.added.length}`);
-      if (res.skipped.length) parts.push(`${res.skipped.length} skipped`);
-      if (res.failed.length) parts.push(`${res.failed.length} could not be read`);
-      this.ui.toast(parts.join(' · ') || 'Nothing added');
+      if (res.added.length) parts.push(`+${res.added.length}`);
+      if (res.skipped.length) parts.push(`${res.skipped.length} already here`);
+      if (res.failed.length) parts.push(`${res.failed.length} unreadable`);
+      this.ui.toast(parts.join(' · ') || '+0');
       if (res.added.length && !this.reader.isOpen) {
         this.metas = await store.listBooks();
         await this.loadLibrary(res.added[res.added.length - 1].id);
@@ -1105,7 +1103,6 @@ class App {
       if (this.shelf.liftStart(hit.entry, sp.x0)) {
         sp.lift = true;
         navigator.vibrate && navigator.vibrate(8);
-        if (this.sort !== 'manual') this.ui.toast('Carry it to its new place — the shelf switches to your own order', 2600);
       }
     }, this.liftMs || 430);
   }
@@ -1230,7 +1227,6 @@ class App {
     if (newSection && !changed.includes(meta)) changed.push(meta);
     this.ui.setTitles(this.shelf.entries.map((x) => x.meta));
     if (newSection) {
-      this.ui.toast(meta.section ? `In the section “${meta.section}”` : 'Out of its section', 1800);
       // a section may have emptied: stand the shelf again from the books
       this.arrange(meta.id, { animate: true });
     }
