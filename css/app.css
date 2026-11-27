@@ -1347,3 +1347,23 @@ body[data-mode='reading'] #empty {
   pointer-events: none;
 }
 
+
+/* ---------------------------------------------------------------- reading view: Full (ui.js: chrome) */
+/* the bars float over a book that fills the screen, and fade while you read */
+.top,
+.bottom,
+#marquee {
+  transition: opacity 0.35s ease;
+}
+body[data-mode='reading'][data-chrome='hidden'] .top,
+body[data-mode='reading'][data-chrome='hidden'] .bottom,
+body[data-mode='reading'][data-chrome='hidden'] #marquee,
+body[data-mode='reading'][data-chrome='hidden'] #readerbar {
+  opacity: 0;
+  pointer-events: none;
+}
+body[data-mode='reading'][data-chrome='hidden'] .top *,
+body[data-mode='reading'][data-chrome='hidden'] .bottom *,
+body[data-mode='reading'][data-chrome='hidden'] #readerbar * {
+  pointer-events: none;
+}

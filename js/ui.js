@@ -35,6 +35,7 @@ export class UI {
     this.panelBody = $('panel-body');
     this.panelMode = null;
     this.bind();
+    this.initChrome();
   }
 
   // ------------------------------------------------------------------ wiring
@@ -233,6 +234,67 @@ export class UI {
     this.toggleAddMenu(false);
     $('readerbar').hidden = !on;
     if (!on) this.closePopovers();
+    this.pokeChrome();
+  }
+
+  // ------------------------------------------------------------------ the bars over a book (Reading view: Full)
+  // While a book fills the screen, the top bar, the title row, the reader bar and the footer float over it and fade
+  // after a few seconds of reading. They come back for a tap in the middle of the page, a touch at the top or bottom
+  // edge, the mouse near either, or a key; they stay while a panel, a menu or a tool is open, the mouse is on them,
+  // or the book isn't open yet. Turning a page lets them go.
+  setChrome(shown) {
+    if (shown) delete this.body.dataset.chrome;
+    else this.body.dataset.chrome = 'hidden';
+  }
+
+  get chromeHidden() {
+    return this.body.dataset.chrome === 'hidden';
+  }
+
+  /** Show the bars, and let them fade after `ms` of quiet. */
+  pokeChrome(ms = 3200) {
+    this.setChrome(true);
+    clearTimeout(this.chromeT);
+    if (this.app.fullView && this.body.dataset.mode === 'reading') this.chromeT = setTimeout(() => this.restChrome(), ms);
+  }
+
+  /** Let the bars fade now, unless something holds them. */
+  restChrome() {
+    clearTimeout(this.chromeT);
+    if (!this.app.fullView || this.body.dataset.mode !== 'reading') return this.setChrome(true);
+    if (this.chromeHeld()) {
+      this.chromeT = setTimeout(() => this.restChrome(), 1200);
+      return;
+    }
+    this.setChrome(false);
+  }
+
+  toggleChrome() {
+    if (this.chromeHidden) this.pokeChrome();
+    else if (!this.chromeHeld()) {
+      clearTimeout(this.chromeT);
+      this.setChrome(false);
+    }
+  }
+
+  chromeHeld() {
+    const r = this.app.reader;
+    if (this.panelMode || this.chromeHover) return true;
+    if (['add-menu', 'goto', 'light-pop', 'ink-pop', 'arrange-pop'].some((id) => !$(id).hidden)) return true;
+    return !r || !r.isOpen || r.phase !== 'reading' || !!r.tool;
+  }
+
+  initChrome() {
+    for (const el of [document.querySelector('.top'), document.querySelector('.bottom'), $('readerbar')]) {
+      if (!el) continue;
+      el.addEventListener('pointerenter', (e) => {
+        if (e.pointerType === 'mouse') this.chromeHover = true;
+      });
+      el.addEventListener('pointerleave', () => {
+        this.chromeHover = false;
+        if (this.app.fullView && this.body.dataset.mode === 'reading') this.pokeChrome(1800);
+      });
+    }
   }
 
 
@@ -964,6 +1026,9 @@ export class UI {
        <section><span class="k">[ Paper surface ]</span>
          <div class="seg"><button type="button" class="mono-btn" data-psrc="sim" aria-pressed="${app.shared.paper.source === 'sim'}">Simulated</button><button type="button" class="mono-btn" data-psrc="classic" aria-pressed="${app.shared.paper.source === 'classic'}">Classic</button></div>
          <p class="note">Simulated: each paper's fibres, formation, marks and finish made from how that paper is made, in Blender. Classic: the surfaces Folio drew before.</p></section>
+       <section><span class="k">[ Reading view ]</span>
+         <div class="seg"><button type="button" class="mono-btn" data-view="full" aria-pressed="${app.fullView}">Full</button><button type="button" class="mono-btn" data-view="framed" aria-pressed="${!app.fullView}">Framed</button></div>
+         <p class="note">Full: an open book fills the screen and reads alone (the shelf is hidden, which also makes reading lighter work for the iPad); the bars float over it and fade while you read. Tap the middle of the page, or touch the top or bottom edge, to bring them back. Framed: the book between the bars with the shelf beside it, as before.</p></section>
        <section><span class="k">[ Turning ]</span>
          <div class="seg"><button type="button" class="mono-btn" data-turn="peel" data-on="1" aria-pressed="${app.cornerPeel}">Peel</button><button type="button" class="mono-btn" data-turn="peel" data-on="0" aria-pressed="${!app.cornerPeel}">Classic</button><span class="mono dim">Corners</span></div>
          <p class="note">Peel: a leaf lifts where you take hold of it. A corner peels off diagonally and the leaf rolls into a cone as it turns; held near the spine it bends softer.</p>
@@ -1007,6 +1072,12 @@ export class UI {
         app.shared.paper.setSource(b.dataset.psrc);
         body.querySelectorAll('[data-psrc]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
         app.invalidate();
+      }),
+    );
+    body.querySelectorAll('[data-view]').forEach((b) =>
+      b.addEventListener('click', () => {
+        app.setFullView(b.dataset.view === 'full');
+        body.querySelectorAll('[data-view]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
       }),
     );
     const turnSet = {

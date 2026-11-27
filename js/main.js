@@ -109,6 +109,7 @@ class App {
     this.riffle = pref('riffle', '1') === '1'; // the thumb on the fore-edge riffles and gathers (RIFFLE)
     this.settleOpen = pref('settle', '1') === '1'; // leaves settle as a book opens (DROP)
     this.paperPhysics = pref('pphys', '1') === '1'; // each paper moves as it is made (paper.js phys)
+    this.fullView = pref('view', 'full') === 'full'; // Settings ▸ Reading view: the book fills the screen (reader.js FULL)
     this.dirty = 3;
     this.lastT = performance.now() / 1000;
     this.pending = null;
@@ -512,6 +513,19 @@ class App {
   setClumpTurns(on) {
     this.clumpTurns = !!on;
     setPref('clump', on ? '1' : '0');
+  }
+
+  /** Settings ▸ Reading view: Full (the book fills the screen, reads alone) or Framed. */
+  setFullView(on) {
+    this.fullView = !!on;
+    setPref('view', on ? 'full' : 'framed');
+    const r = this.reader;
+    if (r.isOpen && r.phase === 'reading') {
+      r.showShelf(!this.fullView);
+      this.shelf.openGapWidth = r.computeGapWidth();
+    }
+    this.ui.pokeChrome();
+    this.invalidate();
   }
 
   /** Settings ▸ Turning: each paper moves as it is made (on), or all alike. */
@@ -1093,7 +1107,15 @@ class App {
   }
 
   onPointerDown(e) {
-    this.canvas.setPointerCapture?.(e.pointerId);
+    if (this.fullView && this.reader.isOpen && this.ui.chromeHidden && (e.clientY < 70 || e.clientY > this.height - 90)) {
+      this.ui.pokeChrome(); // a touch at the top or bottom edge brings the bars back
+      return;
+    }
+    try {
+      this.canvas.setPointerCapture?.(e.pointerId);
+    } catch {
+      /* a pointer the browser no longer tracks: carry on without capture */
+    }
     if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
     if (this.ui.panelMode && e.pointerType !== 'mouse') this.ui.closePanel();
     if (this.reader.isOpen) this.ui.closePopovers();
@@ -1129,6 +1151,7 @@ class App {
   }
 
   onPointerMove(e) {
+    if (this.fullView && this.reader.isOpen && e.pointerType === 'mouse' && !e.buttons && (e.clientY < 80 || e.clientY > this.height - 110)) this.ui.pokeChrome();
     if (this.magnifier.enabled && this.reader.isOpen) {
       if (this.lens && this.lens.id === e.pointerId) {
         this.magnifier.point(e.clientX, e.clientY - 70, this.width, this.height);
@@ -1280,6 +1303,7 @@ class App {
   onKey(e) {
     const tag = (e.target && e.target.tagName) || '';
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (this.fullView && this.reader.isOpen && !['ArrowLeft', 'ArrowRight', ' ', 'PageUp', 'PageDown'].includes(e.key)) this.ui.pokeChrome();
     if (e.key === 'Escape' && !document.getElementById('add-menu').hidden) {
       this.ui.toggleAddMenu(false);
       return;
